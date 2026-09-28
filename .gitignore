@@ -6,9 +6,8 @@
 /public/storage
 /storage/*.key
 /vendor
-.env
-.env.backup
-.env.production
+.env*
+!.env.example
 .phpactor.json
 .phpunit.result.cache
 Homestead.json
@@ -37,3 +36,10 @@ dbdata
 runapp.sh
 supervisord.log
 supervisord.pid
+
+# Planning & Agentic Workflow
+.planning/
+ralph.ps1
+AGENTIC_WORKFLOW_GUIDE.md
+docs/agents/
+docs/
