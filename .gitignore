@@ -43,3 +43,6 @@ ralph.ps1
 AGENTIC_WORKFLOW_GUIDE.md
 docs/agents/
 docs/
+
+# Database backups (operator-produced, never committed)
+/backup/
