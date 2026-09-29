@@ -46,14 +46,39 @@ class HealthEndpointTest extends TestCase
 
     public function test_health_endpoint_defaults_version_to_unknown(): void
     {
+        // APP_VERSION must be absent from BOTH the process environment and the
+        // config repository so the controller's default is exercised. We must
+        // NOT overwrite config('app.version') here: doing so would inject the
+        // very value under test (and setting it to null would shadow the
+        // default, since an existing-but-null key skips config()'s fallback).
+        $originalEnv = getenv('APP_VERSION');
+        $originalEnvArray = $_ENV['APP_VERSION'] ?? null;
+        $originalServer = $_SERVER['APP_VERSION'] ?? null;
+
         putenv('APP_VERSION');
         unset($_ENV['APP_VERSION'], $_SERVER['APP_VERSION']);
 
-        config(['app.version' => env('APP_VERSION', 'unknown')]);
+        // Rebuild config so app.version reflects the now-absent env var.
+        $this->refreshApplication();
+        $this->app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
-        $response = $this->getJson('/health');
+        try {
+            $response = $this->getJson('/health');
 
-        $response->assertStatus(200);
-        $this->assertSame('unknown', $response->json('version'));
+            $response->assertStatus(200);
+            $this->assertSame('unknown', $response->json('version'));
+        } finally {
+            if ($originalEnv !== false) {
+                putenv("APP_VERSION={$originalEnv}");
+            }
+
+            if ($originalEnvArray !== null) {
+                $_ENV['APP_VERSION'] = $originalEnvArray;
+            }
+
+            if ($originalServer !== null) {
+                $_SERVER['APP_VERSION'] = $originalServer;
+            }
+        }
     }
 }
