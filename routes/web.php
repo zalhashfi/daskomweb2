@@ -14,6 +14,7 @@ use App\Http\Controllers\API\JawabanTMController;
 use App\Http\Controllers\API\JawabanTPController;
 use App\Http\Controllers\API\JenisPollingController;
 use App\Http\Controllers\API\KelasController;
+use App\Http\Controllers\HealthController;
 use App\Http\Controllers\API\LaporanPraktikanController;
 use App\Http\Controllers\API\LeaderBoardController;
 use App\Http\Controllers\API\ModulController;
@@ -467,6 +468,8 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     Route::post('/jawaban-tp', [JawabanTPController::class, 'store'])->name('store.jawaban.tugas-pendahuluan')->middleware(['auth:praktikan', 'can:praktikum-lms']);
     Route::get('/jawaban-tp/{idModul}', [JawabanTPController::class, 'show'])->name('show.jawaban.tp')->middleware(['auth:praktikan', 'can:lihat-modul']);
 });
+
+Route::get('/health', HealthController::class)->name('health');
 
 Route::fallback(function () {
     return redirect('/');
