@@ -119,11 +119,33 @@ FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS runtime
 #  redis         : installed via PECL because REDIS_CLIENT defaults to phpredis
 #                  (config/database.php) and predis is only a fallback
 RUN set -eux; \
-    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS linux-headers; \
+    apk add --no-cache --virtual .build-deps \
+        $PHPIZE_DEPS \
+        linux-headers \
+        zlib-dev \
+        libpng-dev \
+        libjpeg-turbo-dev \
+        freetype-dev \
+        icu-dev \
+        oniguruma-dev \
+        libxml2-dev; \
+    docker-php-ext-configure gd --with-freetype --with-jpeg; \
     docker-php-ext-install -j"$(nproc)" pcntl sockets pdo pdo_mysql gd intl bcmath zip; \
     pecl install redis; \
     docker-php-ext-enable redis; \
     apk del --no-network .build-deps
+
+# --- runtime libraries for the compiled extensions ---------------------------
+# The -dev packages above are build-only; these are the shared libraries the
+# built extensions link against at runtime (gd -> png/jpeg/freetype, intl ->
+# icu, zip -> libzip(zlib)).
+RUN apk add --no-cache \
+        libpng \
+        libjpeg-turbo \
+        freetype \
+        icu-libs \
+        libzip \
+        zlib
 
 # --- supervisord + tooling ---------------------------------------------------
 RUN apk add --no-cache supervisor tini curl
