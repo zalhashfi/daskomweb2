@@ -1,0 +1,30 @@
+# Build context exclusions for production images (T08a2).
+# The production Dockerfile does `COPY . /app`; without this file the 45 MB
+# legacy dump (import-db/lms2.sql), the local MySQL data dir (dbdata/) and any
+# local secrets would be baked into an image pushed to a registry.
+.git
+.gitignore
+.planning
+ralph.ps1
+AGENTIC_WORKFLOW_GUIDE.md
+docs
+.github
+dbdata
+import-db
+node_modules
+public/build
+bootstrap/ssr
+bootstrap/cache
+storage
+tests
+.env
+.env.*
+!.env.example
+*.log
+supervisord.log
+supervisord.pid
+runapp.sh
+.phpunit.result.cache
+.phpunit.cache
+test-results
+playwright-report
