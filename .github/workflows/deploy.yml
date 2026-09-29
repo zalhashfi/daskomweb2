@@ -1,0 +1,576 @@
+# =============================================================================
+# CD - tag-triggered release: validate tag -> test gate -> build & push GHCR
+#      -> GitHub Release -> (manual approval) -> SSH deploy
+#
+# File: .github/workflows/deploy.yml        (does NOT modify ci.yml)
+#
+# WHAT RUNS
+#   push a tag matching `v*`  ->  this workflow
+#     1. validate-tag   : the tag MUST be strict semver, else the run fails here
+#     2. build          : gated on a green `test` job (see "TEST GATE" below),
+#                         builds docker/Dockerfile.prod, pushes 2 tags to GHCR,
+#                         creates the GitHub Release, notifies Telegram
+#     3. deploy         : waits on `environment: production` (manual approval),
+#                         then SSHes to the server and runs scripts/deploy.sh
+#
+# -----------------------------------------------------------------------------
+# >>> PLACEHOLDERS - OPERATOR ACTION REQUIRED <<<
+# -----------------------------------------------------------------------------
+# The server details are PENDING, so NO hostname/port/path is invented below.
+# The parts marked `TODO(operator)` carry deliberately invalid placeholder
+# values; the workflow will keep working for the build/release half and will
+# fail LOUDLY at the SSH step until they are replaced.
+#
+# A) GitHub Environment `production`   (Settings > Environments > New environment)
+#      - Protection rule "Required reviewers" -> picks who approves a deploy
+#      - Optionally restrict "Deployment branches and tags" to tag pattern `v*`
+#      Environment-level secrets/vars override repository-level ones.
+#
+# B) Repository secrets   (Settings > Secrets and variables > Actions > Secrets)
+#      SSH_HOST            hostname or IP of the deploy server
+#                          (placeholder: deploy-server.invalid - REPLACE ME)
+#      SSH_USER            SSH login user on that server (placeholder: deploy)
+#      SSH_KEY             private key for that user, OpenSSH format, whole file
+#                          incl. the BEGIN/END lines; its public key must be in
+#                          the server's ~/.ssh/authorized_keys
+#      SSH_PORT            (optional) SSH port; defaults to 22 when unset
+#      DEPLOY_PATH         absolute path of the checked-out production stack on
+#                          the server, i.e. where docker-compose.prod.yml and
+#                          scripts/deploy.sh live (placeholder: /srv/lms2)
+#      GHCR_READ_TOKEN     token used ON THE SERVER to pull the image from GHCR.
+#                          A classic PAT with scope `read:packages`, belonging
+#                          to an account that can read this repo's package.
+#                          If the GHCR package is PUBLIC this can be any dummy
+#                          value and the server can pull anonymously.
+#                          (placeholder: REPLACE_ME)
+#      TELEGRAM_BOT_TOKEN  bot token from @BotFather   (optional: if missing,
+#                          the notification step SKIPS instead of failing)
+#      TELEGRAM_CHAT_ID    chat/channel id to notify   (same: optional)
+#
+# C) Repository variables  (Settings > Secrets and variables > Actions >
+#                            Variables) - NON-SECRET build inputs, because
+#                            Vite compiles them INTO the public JS bundle and
+#                            secret-redaction would only mangle the artefact.
+#      IMAGE_NAME          GHCR repository, e.g. `daskom-lab/daskomweb2`
+#                          (defaults to this repository's own owner/name)
+#      VITE_API_URL        VITE_* values must exist AT IMAGE BUILD TIME, so
+#      VITE_APP_NAME       they are passed as --build-arg from `vars.*`.
+#      VITE_REVERB_APP_KEY   (Reverb app keys are public by design - they are
+#      VITE_REVERB_HOST      handed to every browser client.)
+#      VITE_REVERB_PORT
+#      VITE_REVERB_SCHEME
+#      VITE_IMAGEKIT_PUBLIC_KEY
+#      VITE_IMAGEKIT_ENDPOINT_URL
+#      VITE_GOOGLE_CLIENT_ID
+#      VITE_GOOGLE_API_KEY
+#      Unset VITE_* vars expand to empty and are tolerated by Dockerfile.prod.
+#
+# D) Server prerequisites (see .planning/DEPLOYMENT.md §7)
+#      - docker + docker compose v2, and `docker network create lms2_network`
+#      - scripts/deploy.sh present, executable, and able to run non-interactively
+#      - the server `.env` already filled in (CI never writes it)
+#      - outbound SSH access from GitHub-hosted runners on the chosen port
+#
+# E) scripts/deploy.sh contract (task T11b in .planning/01-01-PLAN.md).
+#    This workflow INVOKES the script as it is actually written:
+#      bash scripts/deploy.sh v1.2.3
+#    i.e. argv[1] is the BARE, PINNED IMAGE TAG - not a registry-qualified ref.
+#    The script rejects anything but ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ (a `/` or a
+#    `:` would be refused with exit 1), so passing `ghcr.io/owner/repo:v1.2.3`
+#    would fail. It then addresses the image explicitly as
+#    ${IMAGE_REPOSITORY}:${TAG} (see scripts/deploy.sh lines 171-184).
+#    Contract the workflow relies on:
+#      - argv[1] = bare tag, e.g. `v1.2.3` (= the semver tag, never `latest`);
+#      - it runs from the repository root inside DEPLOY_PATH;
+#      - it reads the GHCR read credential from the environment
+#        (GHCR_READ_TOKEN here; GHCR_REGISTRY/GHCR_USER too);
+#      - exit 0 means "deployed", anything else means "failed".
+#    KNOWN DISCREPANCY (not resolved here, flag for the T11b owner):
+#    scripts/deploy.sh currently ends up doing `docker compose build` plus a
+#    local re-tag of the floating default tag (lines 300/414-417), i.e. it
+#    BUILDS locally rather than pulling the image this workflow just pushed to
+#    GHCR. For a registry pull-model deploy the script needs either a
+#    `docker pull` of the pushed reference / an `image:` override honouring
+#    IMAGE_TAG, or it must run on a host that has the source tree. That is a
+#    deploy.sh change; this workflow deliberately does not touch scripts/.
+#    Until then a deploy can still be approved and run, but the operator must
+#    confirm the server pulls the GHCR image rather than rebuilding it.
+#
+# THE IMAGE TAG GUARANTEE
+#     * a floating `latest` tag is NEVER a deploy input anywhere in this file;
+#       the workflow passes the semver tag explicitly and the remote wrapper
+#       additionally refuses to proceed when argv[1] is empty or is the
+#       floating tag itself;
+#     * the same immutable image can be re-deployed by passing an older version
+#       tag (rollback, see .planning/DEPLOYMENT.md §9).
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Deploys must SERIALISE and must never be silently cancelled: a half-finished
+# deploy left by a cancellation is worse than a queued one. `cancel-in-progress:
+# false` keeps every queued run alive; the newer tag simply waits its turn.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+# Least privilege: GITHUB_TOKEN only needs package write (GHCR push) and
+# contents write (create the GitHub Release).
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # GHCR package path. `vars.IMAGE_NAME` wins; the fallback is the current repo
+  # in lower case, because GHCR repository names must be lowercase.
+  IMAGE: ${{ vars.IMAGE_NAME != '' && vars.IMAGE_NAME || format('{0}/{1}', github.repository_owner, github.event.repository.name) }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Tag gate - the FIRST thing that runs. A tag such as `v-test` must stop
+  #    the pipeline here, long before an image or a release exists.
+  # ---------------------------------------------------------------------------
+  validate-tag:
+    name: Validate semver tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semver.outputs.version }}
+      sha_short: ${{ steps.meta.outputs.sha_short }}
+    steps:
+      - name: Check the tag is strict semver
+        id: semver
+        env:
+          # Passed through the environment, never interpolated into the script,
+          # so a hostile tag name cannot inject shell commands.
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          printf 'Tag under test: [%s]\n' "$TAG"
+
+          # Strict SemVer 2.0.0, with an optional leading `v` (the trigger
+          # pattern is `v*`, so in practice it is always present).
+          re='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+
+          if [[ ! "$TAG" =~ $re ]]; then
+            {
+              echo "::error title=Invalid release tag::Tag '$TAG' is not semver (expected e.g. v1.2.3 or v1.2.3-rc.1)."
+              echo "### Invalid release tag"
+              echo
+              echo "Refused to deploy: \`$TAG\` is not a semver tag."
+              echo
+              echo "Expected: \`vMAJOR.MINOR.PATCH\` optionally followed by"
+              echo "\`-prerelease\` and/or \`+build\` metadata, e.g. \`v1.2.3\`,"
+              echo "\`v1.2.3-rc.1\`."
+              echo
+              echo "Nothing was built, pushed, released or deployed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Normalised version without the leading `v`, for labels and summaries.
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Tag accepted"
+            echo
+            echo "| ref | version |"
+            echo "| --- | --- |"
+            echo "| \`$TAG\` | \`$VERSION\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "OK: '$TAG' is semver $VERSION"
+
+      - name: Compute short image tag
+        id: meta
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "sha_short=${SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "Immutable image tag: sha-${SHA:0:12}"
+
+  # ---------------------------------------------------------------------------
+  # 2. Build - gated on tests, pushes GHCR, creates the Release.
+  #
+  # TEST GATE (choice (b): re-run the test job inside this workflow)
+  #   ci.yml defines `test`, but it triggers on pull_request + push to main.
+  #   A tag push is neither, and tags created via the API by GITHUB_TOKEN do not
+  #   emit the events a `workflow_run` gate would need - so option (a) would
+  #   leave the gate silently skipped. Option (c) would mean editing ci.yml,
+  #   which is out of scope here. Therefore this workflow re-runs the exact same
+  #   suite (same MySQL 8.0 service, same APP_KEY strategy as ci.yml) as a job
+  #   named `test`, and `build` declares `needs: test`. That is a real gate: if
+  #   the tests are red, the tagged commit cannot build, release or deploy.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (PHPUnit + MySQL)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: dasdaskom
+          MYSQL_ROOT_PASSWORD: password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ppassword --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      # Kept byte-for-byte in sync with ci.yml so this gate tests the same
+      # thing CI tests at PR time.
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: dasdaskom
+      DB_USERNAME: root
+      DB_PASSWORD: password
+      APP_KEY: base64:b8gxIBhBtWOazdZHU4EgGkaBcovfawFSDx3VSbEbAQM=
+      APP_ENV: testing
+      REDIS_CLIENT: predis
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql, mbstring, bcmath, gd, intl, zip
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Prepare environment
+        run: cp .env.example .env && php artisan key:generate
+
+      - name: Run test suite
+        run: php artisan test
+
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    needs: [validate-tag, test]
+
+    outputs:
+      image: ${{ steps.refs.outputs.image }}
+      version: ${{ steps.refs.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image references
+        id: refs
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+          SHA_SHORT: ${{ needs.validate-tag.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          IMAGE_LOWER="$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          # The deployable reference is the SEMVER tag, pinned explicitly.
+          # `latest` is never built, tagged, pushed or deployed by this file.
+          DEPLOY_REF="$REGISTRY/$IMAGE_LOWER:v$VERSION"
+          {
+            echo "ref=$DEPLOY_REF"
+            echo "version=$VERSION"
+            echo "sha_ref=$REGISTRY/$IMAGE_LOWER:sha-$SHA_SHORT"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Deployable image ref: %s\n' "$DEPLOY_REF"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.prod
+          push: true
+          # Exactly two tags: the semver and the immutable sha tag.
+          # Deliberately NOT `latest` - a floating tag must never be deployable.
+          tags: |
+            ${{ steps.refs.outputs.ref }}
+            ${{ steps.refs.outputs.sha_ref }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+            VITE_APP_NAME=${{ vars.VITE_APP_NAME }}
+            VITE_REVERB_APP_KEY=${{ vars.VITE_REVERB_APP_KEY }}
+            VITE_REVERB_HOST=${{ vars.VITE_REVERB_HOST }}
+            VITE_REVERB_PORT=${{ vars.VITE_REVERB_PORT }}
+            VITE_REVERB_SCHEME=${{ vars.VITE_REVERB_SCHEME }}
+            VITE_IMAGEKIT_PUBLIC_KEY=${{ vars.VITE_IMAGEKIT_PUBLIC_KEY }}
+            VITE_IMAGEKIT_ENDPOINT_URL=${{ vars.VITE_IMAGEKIT_ENDPOINT_URL }}
+            VITE_GOOGLE_CLIENT_ID=${{ vars.VITE_GOOGLE_CLIENT_ID }}
+            VITE_GOOGLE_API_KEY=${{ vars.VITE_GOOGLE_API_KEY }}
+          labels: |
+            org.opencontainers.image.title=${{ github.event.repository.name }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.refs.outputs.version }}
+          IMAGE_REF: ${{ steps.refs.outputs.ref }}
+          SHA_REF: ${{ steps.refs.outputs.sha_ref }}
+        run: |
+          set -euo pipefail
+          # Idempotent: re-running the workflow for the same tag must not fail
+          # just because the Release already exists.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists - leaving it untouched."
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --verify-tag \
+              --notes "Container image (immutable, content-addressed):
+
+          - \`$IMAGE_REF\`
+          - \`$SHA_REF\`
+
+          Deployed to \`production\` after the test gate passed and a required
+          reviewer approved the run."
+          fi
+          {
+            echo "### Build \`$VERSION\`"
+            echo
+            echo "| image | tag |"
+            echo "| --- | --- |"
+            echo "| \`$IMAGE_REF\` | semver (deploy input) |"
+            echo "| \`$SHA_REF\` | immutable sha |"
+            echo
+            echo "Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$GITHUB_REF_NAME"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Telegram (build result)
+        if: ${{ always() }}
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_STATUS: ${{ job.status }}
+          IMAGE_REF: ${{ steps.refs.outputs.ref }}
+        run: |
+          set -uo pipefail
+          if [[ -z "${TG_TOKEN:-}" || -z "${TG_CHAT:-}" ]]; then
+            echo "Telegram secrets not configured - skipping notification (not a failure)."
+            exit 0
+          fi
+          if [[ "$JOB_STATUS" == "success" ]]; then ICON="OK"; else ICON="FAIL"; fi
+          TEXT="[$ICON] daskomweb2 $GITHUB_REF_NAME - build job: $JOB_STATUS
+          image: $IMAGE_REF
+          run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if ! curl -fsS -X POST \
+                 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+                 --data-urlencode "chat_id=${TG_CHAT}" \
+                 --data-urlencode "text=${TEXT}" \
+                 -o /dev/null; then
+            echo "::warning title=Telegram notification failed::Continuing; the deployment outcome is authoritative."
+          fi
+
+      - name: Job summary
+        if: ${{ always() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Deploy pipeline - build"
+            echo
+            echo "- tag: \`$GITHUB_REF_NAME\`"
+            echo "- commit: \`$GITHUB_SHA\`"
+            echo "- build job status: **$JOB_STATUS**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy - manual approval gate, then SSH into the server.
+  #
+  # `environment: production` is what creates the gate: the job blocks until the
+  # Environment's required reviewers approve it (configure them in
+  # Settings > Environments, see the setup block at the top of this file).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: [validate-tag, build]
+    environment: production
+
+    steps:
+      # Checks out the TAG commit, so the scripts/deploy.sh that runs on the
+      # server is the one versioned with the release - not whatever main holds.
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        id: deploy
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
+          IMAGE_TAG: v${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          for required in SSH_HOST SSH_USER SSH_KEY DEPLOY_PATH; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "::error title=Missing secret::$required is not set. See the setup block at the top of deploy.yml."
+              exit 1
+            fi
+          done
+
+          PORT="${SSH_PORT:-22}"
+          KNOWN_HOSTS="$RUNNER_TEMP/known_hosts"
+          KEY_FILE="$RUNNER_TEMP/deploy_key"
+          RUNDIR="$RUNNER_TEMP/rundir.sh"
+
+          # Written via env var -> file, never `echo "${{ secrets.SSH_KEY }}"`,
+          # so the key is not interpolated into the script text (and thus never
+          # printed by `set -x` or by a shell error).
+          printf '%s\n' "$SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          mkdir -p "$HOME/.ssh"
+          # Pin the host key on first use (recorded in the run's logs so an
+          # operator can later copy it into a repository secret if they want
+          # strict verification). No host key is hard-coded in this file.
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" > "$KNOWN_HOSTS" 2>/dev/null
+          if [[ ! -s "$KNOWN_HOSTS" ]]; then
+            echo "::warning title=ssh-keyscan produced no host key::Proceeding; use a publishable repository secret for strict pinning if you need it."
+          fi
+
+          # The remote command comes from a file so nothing about it can be
+          # mangled by the outer YAML / shell layers.
+          #
+          # $1 inside the quoted heredoc is the positional parameter OF THE
+          # REMOTE shell (`bash -s -- <args>`), so the image tag is passed as an
+          # ARGUMENT and never concatenated into the command string.
+          cat > "$RUNDIR" <<'REMOTE'
+          set -euo pipefail
+          IMAGE_TAG="$1"
+          IMAGE_REF="$2"
+          cd "$DEPLOY_PATH"
+
+          echo "Target tag: ${IMAGE_TAG}  (published as ${IMAGE_REF})"
+
+          # Refuse to deploy anything that is not pinned to the semver tag.
+          # This is the hard guarantee that `latest` can never be deployed from
+          # this pipeline, even if a caller passes the wrong thing.
+          if [[ -z "${IMAGE_TAG}" || "${IMAGE_TAG##*:}" == "latest" ]]; then
+            echo "ERROR: refusing to deploy a floating 'latest' image tag." >&2
+            exit 1
+          fi
+
+          echo "::group::docker login ${REGISTRY}"
+          printf '%s' "$GHCR_READ_TOKEN" | docker login "$REGISTRY" \
+            --username "$REGISTRY_USER" --password-stdin
+          echo "::endgroup::"
+
+          # scripts/deploy.sh is taken from the checked-out tag (checkout above)
+          # and takes the BARE tag as its only positional argument.
+          # It performs backup -> pull/build -> migrate -> up -> health -> smoke,
+          # see .planning/DEPLOYMENT.md sections 5 and 9.
+          bash scripts/deploy.sh "$IMAGE_TAG"
+          REMOTE
+          chmod +x "$RUNDIR"
+
+          # The token travels only through the SSH session environment and is
+          # never echoed locally.
+          set +e
+          ssh -p "$PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 \
+            -o UserKnownHostsFile="$KNOWN_HOSTS" \
+            -i "$KEY_FILE" \
+            "$SSH_USER@$SSH_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' REGISTRY='$REGISTRY' REGISTRY_USER='$GITHUB_ACTOR' GHCR_READ_TOKEN=\"\$(cat)\" bash -s -- '$IMAGE_TAG' '$IMAGE_REF'" \
+            < "$RUNDIR" < <(printf '%s' "$GHCR_READ_TOKEN")
+          RESULT=$?
+          set -e
+
+          rm -f "$KEY_FILE" "$RUNDIR"
+          if [[ $RESULT -ne 0 ]]; then
+            echo "::error title=Deploy failed::bash scripts/deploy.sh $IMAGE_TAG exited with $RESULT on $SSH_HOST."
+            exit $RESULT
+          fi
+          echo "Deployed $IMAGE_TAG ($IMAGE_REF)"
+
+      - name: Notify Telegram (deploy result)
+        if: ${{ always() }}
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_STATUS: ${{ job.status }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
+        run: |
+          set -uo pipefail
+          # Guard: an unconfigured (or environment-scoped) secret must skip the
+          # notification, never fail an otherwise good deploy.
+          if [[ -z "${TG_TOKEN:-}" || -z "${TG_CHAT:-}" ]]; then
+            echo "Telegram secrets not configured - skipping notification (not a failure)."
+            exit 0
+          fi
+          if [[ "$JOB_STATUS" == "success" ]]; then ICON="OK"; else ICON="FAIL"; fi
+          TEXT="[$ICON] daskomweb2 $GITHUB_REF_NAME - deploy job: $JOB_STATUS
+          image: $IMAGE_REF
+          actor: $GITHUB_ACTOR
+          run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # Best effort by design: a flaky Telegram API must not turn a
+          # successful deploy red.
+          if ! curl -fsS -X POST \
+                 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+                 --data-urlencode "chat_id=${TG_CHAT}" \
+                 --data-urlencode "text=${TEXT}" \
+                 -o /dev/null; then
+            echo "::warning title=Telegram notification failed::Continuing; the deployment outcome is authoritative."
+          fi
+
+      - name: Job summary
+        if: ${{ always() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
+          IMAGE_TAG: v${{ needs.build.outputs.version }}
+        run: |
+          {
+            echo "## Deploy pipeline - production"
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| tag | \`$GITHUB_REF_NAME\` |"
+            echo "| commit | \`$GITHUB_SHA\` |"
+            echo "| deploy input | \`$IMAGE_TAG\` (bare tag, semver) |"
+            echo "| image | \`$IMAGE_REF\` |"
+            echo "| environment | \`production\` (manual approval required) |"
+            echo "| deploy job status | **$JOB_STATUS** |"
+            echo
+            echo "Rollback (see .planning/DEPLOYMENT.md §9): pass an older version"
+            echo "tag to the same script, e.g."
+            echo "\`bash scripts/deploy.sh v<previous>\`."
+          } >> "$GITHUB_STEP_SUMMARY"
