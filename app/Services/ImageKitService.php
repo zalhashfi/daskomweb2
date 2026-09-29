@@ -3,33 +3,21 @@
 namespace App\Services;
 
 use ImageKit\ImageKit;
+use RuntimeException;
 
 class ImageKitService
 {
-    protected ImageKit $client;
+    protected ?ImageKit $client = null;
 
-    protected string $publicKey;
+    protected ?string $publicKey = null;
 
-    protected string $privateKey;
+    protected ?string $privateKey = null;
 
-    protected string $endpointUrl;
-
-    public function __construct()
-    {
-        $this->publicKey = config('services.imagekit.public_key');
-        $this->privateKey = config('services.imagekit.private_key');
-        $this->endpointUrl = config('services.imagekit.endpoint_url');
-
-        $this->client = new ImageKit(
-            $this->publicKey,
-            $this->privateKey,
-            $this->endpointUrl
-        );
-    }
+    protected ?string $endpointUrl = null;
 
     public function getClient(): ImageKit
     {
-        return $this->client;
+        return $this->client();
     }
 
     /**
@@ -37,7 +25,7 @@ class ImageKitService
      */
     public function generateAuthParameters(): array
     {
-        $authParams = $this->client->getAuthenticationParameters();
+        $authParams = $this->client()->getAuthenticationParameters();
 
         return [
             'token' => $authParams->token,
@@ -66,7 +54,7 @@ class ImageKitService
      */
     public function deleteFile(string $fileId): void
     {
-        $this->client->deleteFile($fileId);
+        $this->client()->deleteFile($fileId);
     }
 
     /**
@@ -74,9 +62,33 @@ class ImageKitService
      */
     public function moveFile(string $sourceFilePath, string $destinationPath): object
     {
-        return $this->client->move([
+        return $this->client()->move([
             'sourceFilePath' => $sourceFilePath,
             'destinationPath' => $destinationPath,
         ]);
+    }
+
+    /**
+     * Resolve the ImageKit client, initialising it on first use.
+     */
+    private function client(): ImageKit
+    {
+        if ($this->client instanceof ImageKit) {
+            return $this->client;
+        }
+
+        $this->publicKey = config('services.imagekit.public_key');
+        $this->privateKey = config('services.imagekit.private_key');
+        $this->endpointUrl = config('services.imagekit.endpoint_url');
+
+        if (empty($this->publicKey) || empty($this->privateKey) || empty($this->endpointUrl)) {
+            throw new RuntimeException('ImageKit credentials are not configured.');
+        }
+
+        return $this->client = new ImageKit(
+            $this->publicKey,
+            $this->privateKey,
+            $this->endpointUrl
+        );
     }
 }
