@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One run per ref; a newer push cancels an in-flight run on the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (PHPUnit + MySQL)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: dasdaskom
+          MYSQL_ROOT_PASSWORD: password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ppassword --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      # phpunit.xml leaves the SQLite block commented out, so Feature tests run
+      # against a real database. These values must match the service above.
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: dasdaskom
+      DB_USERNAME: root
+      DB_PASSWORD: password
+      # Tests need a key or they fail with MissingAppKeyException.
+      APP_KEY: base64:b8gxIBhBtWOazdZHU4EgGkaBcovfawFSDx3VSbEbAQM=
+      APP_ENV: testing
+      # Cache/session/queue are forced to array/sync by phpunit.xml, and the
+      # default Redis client needs phpredis which is not always present, so pin
+      # the pure-PHP client used by the suite.
+      REDIS_CLIENT: predis
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql, mbstring, bcmath, gd, intl, zip
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Prepare environment
+        run: cp .env.example .env && php artisan key:generate
+
+      - name: Run test suite
+        run: php artisan test
+
+  lint:
+    name: Style (Pint, changed files only)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the base commit to diff the changed file set.
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Determine changed PHP files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # Fall back to the parent commit when the base is unknown (e.g. first push or force-push).
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            FILES="$(git diff --name-only --diff-filter=ACM "$BASE" HEAD -- '*.php' | tr '\n' ' ')"
+          else
+            FILES="$(git ls-files '*.php' | tr '\n' ' ')"
+          fi
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "Changed PHP files: ${FILES:-<none>}"
+
+      - name: Pint on changed files
+        if: steps.changed.outputs.files != ''
+        # Scoped deliberately: the repository has pre-existing style debt in
+        # files untouched by this change, so linting the whole tree would fail
+        # permanently and train people to ignore CI. Only files changed here are
+        # gated; the legacy backlog is tracked separately.
+        run: ./vendor/bin/pint --test ${{ steps.changed.outputs.files }}

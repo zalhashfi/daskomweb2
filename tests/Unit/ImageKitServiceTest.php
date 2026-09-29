@@ -22,14 +22,14 @@ class ImageKitServiceTest extends TestCase
     {
         $this->clearImageKitConfig();
 
-        $this->assertInstanceOf(ImageKitService::class, new ImageKitService());
+        $this->assertInstanceOf(ImageKitService::class, new ImageKitService);
     }
 
     public function test_get_client_without_credentials_throws_runtime_exception(): void
     {
         $this->clearImageKitConfig();
 
-        $service = new ImageKitService();
+        $service = new ImageKitService;
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('ImageKit credentials are not configured.');
@@ -45,7 +45,7 @@ class ImageKitServiceTest extends TestCase
             'services.imagekit.endpoint_url' => 'https://ik.imagekit.io/test',
         ]);
 
-        $client = (new ImageKitService())->getClient();
+        $client = (new ImageKitService)->getClient();
 
         $this->assertInstanceOf(ImageKit::class, $client);
     }
@@ -58,7 +58,7 @@ class ImageKitServiceTest extends TestCase
             'services.imagekit.endpoint_url' => 'https://ik.imagekit.io/test',
         ]);
 
-        $parameters = (new ImageKitService())->generateAuthParameters();
+        $parameters = (new ImageKitService)->generateAuthParameters();
 
         $this->assertIsArray($parameters);
         $this->assertSame('public_test_key', $parameters['publicKey']);
@@ -67,7 +67,7 @@ class ImageKitServiceTest extends TestCase
 
     public function test_normalize_metadata_maps_keys(): void
     {
-        $service = new ImageKitService();
+        $service = new ImageKitService;
 
         $normalized = $service->normalizeMetadata([
             'fileId' => 'file_123',
@@ -87,7 +87,7 @@ class ImageKitServiceTest extends TestCase
 
     public function test_normalize_metadata_defaults_missing_keys_to_null(): void
     {
-        $normalized = (new ImageKitService())->normalizeMetadata([]);
+        $normalized = (new ImageKitService)->normalizeMetadata([]);
 
         $this->assertSame([
             'file_id' => null,

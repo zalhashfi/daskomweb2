@@ -13,7 +13,7 @@ class MigrationSafetyTest extends TestCase
     {
         parent::setUp();
 
-        $this->safety = new MigrationSafety();
+        $this->safety = new MigrationSafety;
     }
 
     public function test_migration_with_drop_column_is_irreversible(): void
@@ -107,9 +107,6 @@ class MigrationSafetyTest extends TestCase
         $this->assertContains('raw drop column', $result['reasons']);
     }
 
-    /**
-     * @return string
-     */
     private function writeMigration(string $body): string
     {
         $path = $this->migrationPath();
