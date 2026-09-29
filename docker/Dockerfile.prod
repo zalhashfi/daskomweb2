@@ -128,6 +128,7 @@ RUN set -eux; \
         freetype-dev \
         icu-dev \
         oniguruma-dev \
+        libzip-dev \
         libxml2-dev; \
     docker-php-ext-configure gd --with-freetype --with-jpeg; \
     docker-php-ext-install -j"$(nproc)" pcntl sockets pdo pdo_mysql gd intl bcmath zip; \
