@@ -34,7 +34,7 @@ services:
       - "3306"
     volumes:
       - ./dbdata:/var/lib/mysql
-      - ./import-db/lms22.sql:/docker-entrypoint-initdb.d/lms22.sql:ro
+      - ./import-db/lms2.sql:/docker-entrypoint-initdb.d/lms2.sql:ro
     networks:
       - lms2_network
 
