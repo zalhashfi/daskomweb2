@@ -28,6 +28,18 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
+      redis:
+        # Production runs Redis (snapshot cache, Horizon). Some tests exercise
+        # it through AutosaveSnapshotController's direct Redis::connection call,
+        # so the service must exist or they fail with a refused connection.
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
 
     env:
       # phpunit.xml leaves the SQLite block commented out, so Feature tests run
