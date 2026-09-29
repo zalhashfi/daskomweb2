@@ -1,0 +1,56 @@
+# =============================================================================
+# Caddyfile for the production daskomweb2 image.
+#
+# FrankenPHP is used in CLASSIC (non-worker) mode: the plain `php_server`
+# directive handles each request through the conventional PHP request lifecycle.
+# There is deliberately NO `frankenphp worker` / `php_server { worker ... }`
+# block here -- worker-mode application servers are out of scope for this image.
+#
+# Bind to :8000 so the container is reachable on 8000 behind any proxy/LB.
+# =============================================================================
+
+{
+	# Do not attempt automatic HTTPS/ACME inside the container; TLS is
+	# terminated by the platform ingress in front of this service.
+	auto_https off
+
+	frankenphp {
+		# Classic mode: no worker script is configured.
+		num_threads 4
+	}
+
+	admin off
+}
+
+:8000 {
+	root * /app/public
+
+	# `php_server` (NOT `php_server { worker }`) => classic, non-worker mode.
+	php_server
+
+	# Compression + sane security defaults for a Laravel app.
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Long-lived immutable assets emitted by Vite; everything else falls
+	# through to Laravel's front controller.
+	@vite_assets path /build/*
+	header @vite_assets Cache-Control "public, max-age=31536000, immutable"
+
+	log {
+		output stdout
+		format console
+	}
+
+	# Standard Caddy/Laravel catch-all: serve static file if it exists,
+	# otherwise hand off to index.php.
+	# (`php_server` already registers try_files/rewrites for the front
+	# controller; this explicit block keeps the intent obvious.)
+	file_server
+}

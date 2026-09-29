@@ -1,0 +1,173 @@
+# check=skip=SecretsUsedInArgOrEnv
+# =============================================================================
+# Production image for daskomweb2 (Laravel 11 + Inertia/React + Reverb + Horizon)
+#
+# This image is SELF-CONTAINED: build context is the repository root
+# (`docker build -f docker/Dockerfile.prod .`) and the runtime stage bakes in
+# application code, PHP `vendor/` and compiled frontend assets. No bind-mount
+# of the code is required at runtime.
+#
+# Serving model: FrankenPHP in CLASSIC (non-worker) mode via Caddy's plain
+# `php_server` directive (see docker/Caddyfile). Worker-mode app servers and the
+# framework's built-in PHP dev server are intentionally NOT used.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Stage 1 -- frontend asset build (Bun)
+#
+# Vite compiles import.meta.env.VITE_* INTO the bundle, so those values must be
+# present at build time (NOT runtime). We accept them as build ARGs and export
+# them before `bun run build` so the emitted assets point at the right API.
+# -----------------------------------------------------------------------------
+FROM oven/bun:1.3-alpine AS assets
+
+WORKDIR /app
+
+# VITE_* build-time configuration. VITE_API_URL is the primary one (see
+# resources/js/lib/api.js); the rest are optional and default to empty so a
+# plain `docker build` still succeeds.
+ARG VITE_API_URL=""
+ARG VITE_APP_NAME="Laravel"
+ARG VITE_REVERB_APP_KEY=""
+ARG VITE_REVERB_HOST=""
+ARG VITE_REVERB_PORT=""
+ARG VITE_REVERB_SCHEME="https"
+ARG VITE_IMAGEKIT_PUBLIC_KEY=""
+ARG VITE_IMAGEKIT_ENDPOINT_URL=""
+ARG VITE_GOOGLE_CLIENT_ID=""
+ARG VITE_GOOGLE_API_KEY=""
+ENV VITE_API_URL=${VITE_API_URL} \
+    VITE_APP_NAME=${VITE_APP_NAME} \
+    VITE_REVERB_APP_KEY=${VITE_REVERB_APP_KEY} \
+    VITE_REVERB_HOST=${VITE_REVERB_HOST} \
+    VITE_REVERB_PORT=${VITE_REVERB_PORT} \
+    VITE_REVERB_SCHEME=${VITE_REVERB_SCHEME} \
+    VITE_IMAGEKIT_PUBLIC_KEY=${VITE_IMAGEKIT_PUBLIC_KEY} \
+    VITE_IMAGEKIT_ENDPOINT_URL=${VITE_IMAGEKIT_ENDPOINT_URL} \
+    VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID} \
+    VITE_GOOGLE_API_KEY=${VITE_GOOGLE_API_KEY}
+
+# Only the manifests are needed for the dependency layer, so this layer is
+# cached independently of application source changes.
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production=false
+
+COPY vite.config.js jsconfig.json postcss.config.js tailwind.config.js ./
+COPY resources ./resources
+COPY public ./public
+
+# `bun run build` => `vite build && vite build --ssr`; produces public/build
+# (client assets + manifest) and bootstrap/ssr (SSR bundle). The SSR bundle is
+# not served by this image (no Node runtime is installed) -- Inertia falls back
+# to client-side rendering -- but the build script emits it unconditionally.
+RUN bun run build
+
+
+# -----------------------------------------------------------------------------
+# Stage 2 -- production PHP dependencies (Composer)
+#
+# A throwaway image (never shipped) so the runtime image does not need the
+# Composer binary. `--no-scripts` avoids running this project's
+# `post-autoload-dump` hook, which shells out to `artisan` and requires a fully
+# bootable app (APP_KEY, DB, ...) that does not exist yet at image build time.
+# `--optimize-autoloader` is what we actually need from that path.
+# -----------------------------------------------------------------------------
+FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS vendor
+
+RUN apk add --no-cache unzip
+
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+
+WORKDIR /app
+
+# composer.lock first for better layer caching; the full source copy afterwards
+# keeps Composer's classmap authoritative for "optimize-autoloader" correctness.
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-interaction --no-scripts --no-progress \
+        --prefer-dist --optimize-autoloader
+
+COPY . .
+RUN composer install --no-dev --no-interaction --no-scripts --no-progress \
+        --prefer-dist --optimize-autoloader
+
+
+# -----------------------------------------------------------------------------
+# Stage 3 -- runtime
+# -----------------------------------------------------------------------------
+FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS runtime
+
+# --- PHP extensions required by the app -------------------------------------
+#  pcntl/sockets : Horizon (ext-pcntl, ext-sockets per composer.lock)
+#  pdo/pdo_mysql : MySQL
+#  gd            : Intervention Image GD driver (config/image.php)
+#  intl          : Laravel localized validation
+#  bcmath, zip   : common runtime deps
+#  redis         : installed via PECL because REDIS_CLIENT defaults to phpredis
+#                  (config/database.php) and predis is only a fallback
+RUN set -eux; \
+    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS; \
+    docker-php-ext-install -j"$(nproc)" pcntl sockets pdo pdo_mysql gd intl bcmath zip; \
+    pecl install redis; \
+    docker-php-ext-enable redis; \
+    apk del --no-network .build-deps
+
+# --- supervisord + tooling ---------------------------------------------------
+RUN apk add --no-cache supervisor tini curl
+
+# --- application code --------------------------------------------------------
+# Baked in (NOT bind-mounted) to keep the image self-contained.
+WORKDIR /app
+COPY . /app
+
+# Built frontend assets and production PHP deps from the earlier stages.
+# NOTE: .dockerignore excludes public/build, bootstrap/ssr and bootstrap/cache,
+# so `COPY . /app` above cannot provide them -- they must come from stage 1.
+COPY --from=assets /app/public/build /app/public/build
+COPY --from=assets /app/bootstrap/ssr /app/bootstrap/ssr
+COPY --from=vendor /app/vendor /app/vendor
+
+# --- server configuration (classic FrankenPHP / Caddy php_server) ------------
+COPY docker/Caddyfile /etc/frankenphp/Caddyfile
+COPY docker/supervisord.prod.conf /etc/supervisor/conf.d/supervisord.prod.conf
+COPY docker/entrypoint.prod.sh /usr/local/bin/entrypoint.prod.sh
+RUN chmod +x /usr/local/bin/entrypoint.prod.sh
+
+# --- writable paths ----------------------------------------------------------
+RUN set -eux; \
+    mkdir -p storage/framework/{cache/data,sessions,views} \
+             storage/logs storage/app/public bootstrap/cache \
+             /var/log/supervisor /var/run; \
+    chown -R www-data:www-data storage bootstrap/cache; \
+    chmod -R ug+rwX storage bootstrap/cache
+
+# --- Laravel cache warm-up ---------------------------------------------------
+# DELIBERATELY NOT DONE AT BUILD TIME.
+#
+#   `php artisan config:cache` serialises the *resolved* configuration, which on
+#   a skeleton relies on APP_KEY, DB_*, REDIS_* and friends. Baking a cache with
+#   placeholder/empty values and then starting the container with the real env
+#   either (a) keeps the stale baked values (config:cache is read in preference
+#   to .env/env vars) or (b) throws "No application encryption key has been
+#   specified" during boot. `route:cache` also needs the app to boot cleanly,
+#   and `view:cache` would bake the compiled views against an environment that
+#   may not match production.
+#
+#   Therefore config/route/view warm-up happens in the ENTRYPOINT at container
+#   start, once the real environment variables are present (see
+#   docker/entrypoint.prod.sh). On a read-only rootfs the entrypoint degrades
+#   gracefully instead of crash-looping.
+
+ENV APP_ENV=production \
+    APP_DEBUG=false \
+    SERVER_NAME=":8000" \
+    PORT=8000
+
+# Caddy's config path consumed by the frankenphp binary (classic mode).
+ENV FRANKENPHP_CONFIG=""
+
+EXPOSE 8000 8090
+
+# tini reaps zombies; supervisord is PID 1's child and manages the 3 programs.
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.prod.sh"]
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.prod.conf"]
