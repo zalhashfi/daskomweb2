@@ -14,7 +14,44 @@
 
 
 # -----------------------------------------------------------------------------
-# Stage 1 -- frontend asset build (Bun)
+# Stage 1 -- production PHP dependencies (Composer)
+#
+# A throwaway image (never shipped) so the runtime image does not need the
+# Composer binary. `--no-scripts` avoids running this project's
+# `post-autoload-dump` hook, which shells out to `artisan` and requires a fully
+# bootable app (APP_KEY, DB, ...) that does not exist yet at image build time.
+# `--optimize-autoloader` is what we actually need from that path.
+# -----------------------------------------------------------------------------
+FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS vendor
+
+# laravel/horizon requires ext-pcntl at install time, so the dependency stage
+# must provide it even though it only produces the autoloader.
+RUN set -eux; \
+    apk add --no-cache --virtual .build-deps $PHPIZE_DEPS; \
+    docker-php-ext-install pcntl; \
+    apk del --no-network .build-deps
+
+RUN apk add --no-cache unzip
+
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+
+WORKDIR /app
+
+# composer.lock first for better layer caching; the full source copy afterwards
+# keeps Composer's classmap authoritative for "optimize-autoloader" correctness.
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-interaction --no-scripts --no-progress \
+        --prefer-dist --optimize-autoloader
+
+COPY . .
+RUN composer install --no-dev --no-interaction --no-scripts --no-progress \
+        --prefer-dist --optimize-autoloader
+
+
+# -----------------------------------------------------------------------------
+# Stage 2 -- frontend asset build (Bun)
+#
+# NOTE: this stage COPYs the PHP vendor tree from stage 1,
 #
 # Vite compiles import.meta.env.VITE_* INTO the bundle, so those values must be
 # present at build time (NOT runtime). We accept them as build ARGs and export
@@ -51,7 +88,11 @@ ENV VITE_API_URL=${VITE_API_URL} \
 # Only the manifests are needed for the dependency layer, so this layer is
 # cached independently of application source changes.
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production=false
+RUN bun install --frozen-lockfile
+
+# resources/js/ssr.jsx imports `../../vendor/tightenco/ziggy`, so the PHP vendor
+# tree must exist before the Vite build can resolve its imports.
+COPY --from=vendor /app/vendor ./vendor
 
 COPY vite.config.js jsconfig.json postcss.config.js tailwind.config.js ./
 COPY resources ./resources
@@ -62,34 +103,6 @@ COPY public ./public
 # not served by this image (no Node runtime is installed) -- Inertia falls back
 # to client-side rendering -- but the build script emits it unconditionally.
 RUN bun run build
-
-
-# -----------------------------------------------------------------------------
-# Stage 2 -- production PHP dependencies (Composer)
-#
-# A throwaway image (never shipped) so the runtime image does not need the
-# Composer binary. `--no-scripts` avoids running this project's
-# `post-autoload-dump` hook, which shells out to `artisan` and requires a fully
-# bootable app (APP_KEY, DB, ...) that does not exist yet at image build time.
-# `--optimize-autoloader` is what we actually need from that path.
-# -----------------------------------------------------------------------------
-FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS vendor
-
-RUN apk add --no-cache unzip
-
-COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
-
-WORKDIR /app
-
-# composer.lock first for better layer caching; the full source copy afterwards
-# keeps Composer's classmap authoritative for "optimize-autoloader" correctness.
-COPY composer.json composer.lock ./
-RUN composer install --no-dev --no-interaction --no-scripts --no-progress \
-        --prefer-dist --optimize-autoloader
-
-COPY . .
-RUN composer install --no-dev --no-interaction --no-scripts --no-progress \
-        --prefer-dist --optimize-autoloader
 
 
 # -----------------------------------------------------------------------------
