@@ -19,7 +19,10 @@ class HealthEndpointTest extends TestCase
 
         $this->assertSame('ok', $response->json('status'));
         $this->assertIsArray($response->json('checks'));
-        $this->assertSame([], $response->json('checks'));
+        $this->assertEqualsCanonicalizing(
+            ['database', 'cache', 'disk'],
+            array_keys($response->json('checks')),
+        );
     }
 
     public function test_health_endpoint_returns_configured_version(): void
