@@ -19,6 +19,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Snapshot Store
+    |--------------------------------------------------------------------------
+    |
+    | This option controls the cache store used for autosave snapshot data
+    | instead of the default cache store. This lets snapshots live in a
+    | dedicated store (for example, Redis) independent of the default.
+    |
+    */
+
+    'snapshot_store' => env('CACHE_SNAPSHOT_STORE', 'redis'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Cache Stores
     |--------------------------------------------------------------------------
     |
