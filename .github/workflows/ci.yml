@@ -61,6 +61,17 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --no-progress --prefer-dist
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3'
+
+      - name: Build frontend assets
+        # Feature tests render the Inertia shell, which resolves assets through
+        # the Vite manifest. Without a build the view throws
+        # ViteManifestNotFoundException and those tests fail with 500.
+        run: bun install --frozen-lockfile && bun run build
+
       - name: Prepare environment
         run: cp .env.example .env && php artisan key:generate
 
