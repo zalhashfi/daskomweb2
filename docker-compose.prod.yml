@@ -1,0 +1,125 @@
+# =============================================================================
+# Production compose for daskomweb2 (Laravel 11 + Inertia/React + Reverb + Horizon)
+#
+# This is the PRODUCTION counterpart to docker-compose.yml (which is dev-only).
+# Key differences from dev, by design:
+#
+#   * lms2_web is built from docker/Dockerfile.prod (self-contained image:
+#     code, vendor/ and compiled assets are BAKED IN). There is NO bind-mount
+#     of the source tree -- only a NAMED VOLUME for /app/storage so that
+#     uploads/local files survive redeploys.
+#   * There is NO `frontend` one-shot build service: assets are built inside
+#     the image (stage 1 of Dockerfile.prod), so no runtime Node/Bun is needed.
+#   * lms2_mysql has NO seed mount. Production runs on real data; the dev seed
+#     `import-db/lms2.sql` is deliberately NOT mounted.
+#
+# Secrets are NOT committed here. Values are either passed through from the
+# host environment / host `.env` (with `${VAR:?}` for values that are mandatory
+# to boot) or supplied by the deployment tooling.
+#
+# Usage:
+#   docker network create lms2_network        # once, if it does not exist yet
+#   docker compose -f docker-compose.prod.yml up -d --build
+# =============================================================================
+
+services:
+  lms2_web:
+    container_name: lms2_web
+    build:
+      # Build context is the repository root (the image needs the full source,
+      # composer manifests and frontend resources); the Dockerfile itself lives
+      # under docker/. Do NOT use docker/Dockerfile -- that is the dev image.
+      context: .
+      dockerfile: docker/Dockerfile.prod
+    # APP_ENV / REDIS_HOST / BROADCAST_CONNECTION / REVERB_SCALING_ENABLED are
+    # non-secret and set explicitly. Everything else (APP_KEY, DB_*, MAIL_*,
+    # REVERB_APP_*, IMAGEKIT_*, ...) must be supplied by the host environment
+    # or the host `.env` file -- secrets are never committed to this file.
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      REDIS_HOST: lms2_redis
+      BROADCAST_CONNECTION: reverb
+      REVERB_SCALING_ENABLED: "false"
+      # Secrets: supplied via the host environment / host `.env`, never stored
+      # in this file. Optional pass-through (defaults to empty when unset) so
+      # `docker compose config` stays parseable in CI; the values MUST be
+      # provided at deploy time or the app will fail to boot (APP_KEY) / the
+      # database will reject connections (DB_PASSWORD).
+      APP_KEY: ${APP_KEY:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+    volumes:
+      # NAMED VOLUME ONLY -- no code bind-mount. The application code lives in
+      # the image; only uploads/local files under /app/storage are persisted so
+      # they survive redeploys.
+      - lms2_storage:/app/storage
+    ports:
+      # Host 8001 -> container 8000 (FrankenPHP/Caddy web).
+      # Host 8090 -> container 8090 (Laravel Reverb websockets).
+      - "8001:8000"
+      - "8090:8090"
+    healthcheck:
+      # Probes the app's real /health route through FrankenPHP on :8000.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      lms2_mysql:
+        condition: service_healthy
+      lms2_redis:
+        condition: service_started
+    networks:
+      - lms2_network
+
+  lms2_mysql:
+    image: mysql:8.0
+    container_name: lms2_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-dasdaskom}
+      # Supplied via the host environment / host `.env`; never stored here.
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-}
+    expose:
+      - "3306"
+    volumes:
+      # NO seed mount: production uses real data. import-db/lms2.sql must NOT
+      # be mounted here. Data lives in the named volume below.
+      - lms2_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - lms2_network
+
+  lms2_redis:
+    image: redis:7-alpine
+    container_name: lms2_redis
+    command: ["redis-server", "--appendonly", "no"]
+    restart: unless-stopped
+    expose:
+      - "6379"
+    networks:
+      - lms2_network
+
+# We join the EXISTING external network `lms2_network` rather than declaring a
+# dedicated prod network. Justification: the network is already provisioned on
+# this host and is shared by the current setup (phpMyAdmin, external reverse
+# proxy, etc.). Reusing it lets prod coexist with / be reached by the existing
+# stack without duplicate network plumbing. `external: true` means compose will
+# NOT create it -- create it once with `docker network create lms2_network` if
+# it is missing.
+networks:
+  lms2_network:
+    external: true
+    name: lms2_network
+
+volumes:
+  # Named volumes (not bind-mounts) for durable prod state.
+  lms2_storage:
+  lms2_mysql_data:
