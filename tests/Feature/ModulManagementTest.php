@@ -93,9 +93,17 @@ class ModulManagementTest extends TestCase
 
         $response = $this->from('/modul')->post('/api-v1/modul', $payload + ['_token' => $token]);
 
+        // `/api-v1/*` always answers validation failures with a JSON 422
+        // (`RenderApiException`), never a redirect back to `/modul`.
         $response
-            ->assertRedirect('/modul')
-            ->assertSessionHasErrors(['deskripsi']);
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['deskripsi']);
+
+        $this->assertSame(
+            ['The deskripsi field is required.'],
+            $response->json('errors.deskripsi'),
+            'Learning point (deskripsi) must be reported as a required field.'
+        );
 
         $this->assertDatabaseMissing('moduls', [
             'judul' => $payload['judul'],

@@ -262,10 +262,10 @@ class JawabanSubmissionModelTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('jawaban_submissions'));
 
-        // jawaban_tps.submission_id and jawaban_mandiris.submission_id
-        // reference this table with CASCADE foreign keys, so their owning
-        // migrations run down() first to drop those references, exactly like a
-        // real `migrate:rollback` batch.
+        // jawaban_tps.submission_id, jawaban_mandiris.submission_id and
+        // submission_unlocks.submission_id reference this table with CASCADE
+        // foreign keys, so their owning migrations run down() first to drop
+        // those references, exactly like a real `migrate:rollback` batch.
         $this->runSubmissionsReferenceMigrations('down');
 
         $this->runMigration('down');
@@ -313,15 +313,16 @@ class JawabanSubmissionModelTest extends TestCase
     }
 
     /**
-     * Re-drive 2026_10_17_150000 (jawaban_tps) and 2026_10_17_170000
-     * (jawaban_mandiris), which own the foreign keys that keep
-     * jawaban_submissions from being dropped.
+     * Re-drive 2026_10_17_150000 (jawaban_tps), 2026_10_17_170000
+     * (jawaban_mandiris) and 2026_10_17_200000 (submission_unlocks), which own
+     * the foreign keys that keep jawaban_submissions from being dropped.
      */
     private function runSubmissionsReferenceMigrations(string $direction): void
     {
         foreach ([
             '2026_10_17_150000_add_submission_id_to_jawaban_tps_table.php',
             '2026_10_17_170000_add_submission_id_to_jawaban_mandiris_table.php',
+            '2026_10_17_200000_create_submission_unlocks_table.php',
         ] as $file) {
             $migration = require database_path('migrations/'.$file);
 
