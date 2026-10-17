@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Asisten;
+use App\Models\JawabanSubmission;
 use App\Models\JawabanTp;
 use App\Models\Kelas;
 use App\Models\Modul;
@@ -79,10 +80,19 @@ class SoalDeleteGuardTest extends TestCase
         $kelas = Kelas::factory()->create();
         $praktikan = Praktikan::factory()->create(['kelas_id' => $kelas->id]);
 
+        // jawaban_tps.submission_id is NOT NULL and unique per (submission_id,
+        // soal_id), so a second answer on the same soal needs its own attempt.
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikan->id,
+            'modul_id' => $soal->modul_id,
+            'tipe' => JawabanSubmission::TIPE_TP,
+        ]);
+
         return JawabanTp::create([
             'praktikan_id' => $praktikan->id,
             'soal_id' => $soal->id,
             'modul_id' => $soal->modul_id,
+            'submission_id' => $submission->id,
             'jawaban' => 'Jawaban praktikan untuk soal TP.',
         ]);
     }

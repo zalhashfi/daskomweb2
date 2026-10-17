@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\JawabanSubmission;
 use App\Models\JawabanTa;
 use App\Models\JawabanTp;
 use App\Models\Modul;
@@ -96,10 +97,17 @@ class PraktikanAnswerUnlockTest extends TestCase
             'soal' => 'Apa tujuan percobaan?',
         ]);
 
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikan->id,
+            'modul_id' => $modul->id,
+            'tipe' => JawabanSubmission::TIPE_TP,
+        ]);
+
         JawabanTp::create([
             'praktikan_id' => $praktikan->id,
             'modul_id' => $modul->id,
             'soal_id' => $soal->id,
+            'submission_id' => $submission->id,
             'jawaban' => 'Mengamati data',
         ]);
 

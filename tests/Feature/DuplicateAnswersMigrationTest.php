@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Console\Commands\ArchiveDuplicateAnswers;
+use App\Models\JawabanSubmission;
 use App\Models\Praktikan;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -261,14 +262,41 @@ class DuplicateAnswersMigrationTest extends TestCase
 
     private function insertJawaban(string $key, int $praktikanId, int $modulId, int $soalId, string $createdAt): int
     {
-        return (int) DB::table($this->tables[$key]['source'])->insertGetId([
+        // jawaban_tps.submission_id is NOT NULL and unique per (submission_id,
+        // soal_id): identical answers on the same soal are two attempts, so
+        // each duplicate row is attached to its own tp submission.
+        $attributes = [
             'praktikan_id' => $praktikanId,
             'modul_id' => $modulId,
             'soal_id' => $soalId,
             'jawaban' => 'Jawaban lama '.$createdAt,
             'created_at' => $createdAt,
             'updated_at' => $createdAt,
-        ]);
+        ];
+
+        if ($key === 'tp') {
+            $attributes['submission_id'] = $this->makeTpSubmission($praktikanId, $modulId)->id;
+        }
+
+        return (int) DB::table($this->tables[$key]['source'])->insertGetId($attributes);
+    }
+
+    private function makeTpSubmission(int $praktikanId, int $modulId): JawabanSubmission
+    {
+        // (praktikan_id, modul_id, tipe, attempt_no) is unique, so every extra
+        // answer in the same slot becomes the next attempt.
+        $nextAttempt = (int) DB::table('jawaban_submissions')
+            ->where('praktikan_id', $praktikanId)
+            ->where('modul_id', $modulId)
+            ->where('tipe', JawabanSubmission::TIPE_TP)
+            ->max('attempt_no') + 1;
+
+        return JawabanSubmission::create([
+            'praktikan_id' => $praktikanId,
+            'modul_id' => $modulId,
+            'tipe' => JawabanSubmission::TIPE_TP,
+            'attempt_no' => $nextAttempt,
+        ])->fresh();
     }
 
     private function sourceCount(string $key): int

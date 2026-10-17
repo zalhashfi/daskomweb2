@@ -152,21 +152,22 @@ class JawabanSubmissionModelTest extends TestCase
     {
         $praktikan = Praktikan::factory()->create();
         $modul = Modul::factory()->create();
-        $jawabanTp = JawabanTp::create([
-            'praktikan_id' => $praktikan->id,
-            'soal_id' => $this->createSoalTpId($modul),
-            'modul_id' => $modul->id,
-            'jawaban' => 'Jawaban TP.',
-        ]);
-
         $submission = JawabanSubmission::create([
             'praktikan_id' => $praktikan->id,
             'modul_id' => $modul->id,
             'tipe' => JawabanSubmission::TIPE_TP,
-            'jawaban_id' => $jawabanTp->id,
+        ]);
+        $jawabanTp = JawabanTp::create([
+            'praktikan_id' => $praktikan->id,
+            'soal_id' => $this->createSoalTpId($modul),
+            'modul_id' => $modul->id,
+            'submission_id' => $submission->id,
+            'jawaban' => 'Jawaban TP.',
         ]);
 
-        $resolved = $submission->jawaban();
+        $submission->update(['jawaban_id' => $jawabanTp->id]);
+
+        $resolved = $submission->fresh()->jawaban();
 
         $this->assertInstanceOf(JawabanTp::class, $resolved);
         $this->assertSame($jawabanTp->id, $resolved->id);
@@ -248,8 +249,12 @@ class JawabanSubmissionModelTest extends TestCase
 
     public function test_migration_down_then_up_restores_table(): void
     {
-        $this->makeSubmission();
         $this->assertTrue(Schema::hasTable('jawaban_submissions'));
+
+        // jawaban_tps.submission_id references this table with a CASCADE
+        // foreign key, so the migration under test runs its down() first to
+        // drop that reference, exactly like a real `migrate:rollback` batch.
+        $this->runSubmissionsReferenceMigration('down');
 
         $this->runMigration('down');
 
@@ -258,6 +263,7 @@ class JawabanSubmissionModelTest extends TestCase
         $this->assertTrue(Schema::hasTable('moduls'), 'down() tidak boleh menyentuh tabel lain.');
 
         $this->runMigration('up');
+        $this->runSubmissionsReferenceMigration('up');
 
         $this->assertTrue(Schema::hasTable('jawaban_submissions'), 'up() harus membuat ulang tabel.');
         foreach (['praktikan_id', 'modul_id', 'tipe', 'attempt_no', 'jawaban_id', 'locked_at', 'locked_by_type', 'locked_by_id'] as $column) {
@@ -270,6 +276,28 @@ class JawabanSubmissionModelTest extends TestCase
         $submission = $this->makeSubmission();
         $this->assertSame(1, $submission->attempt_no);
         $this->assertFalse($submission->isLocked());
+        $this->assertContains(
+            'jawaban_tps_submission_id_foreign',
+            array_map(
+                fn (object $row): string => $row->CONSTRAINT_NAME,
+                DB::select(
+                    'SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME = ?',
+                    ['jawaban_tps', 'jawaban_submissions']
+                )
+            ),
+            'FK jawaban_tps.submission_id harus kembali setelah up().'
+        );
+    }
+
+    /**
+     * Re-drive 2026_10_17_150000_add_submission_id_to_jawaban_tps_table, which
+     * owns the foreign key that keeps jawaban_submissions from being dropped.
+     */
+    private function runSubmissionsReferenceMigration(string $direction): void
+    {
+        $migration = require database_path('migrations/2026_10_17_150000_add_submission_id_to_jawaban_tps_table.php');
+
+        $migration->{$direction}();
     }
 
     private function isMySqlFamily(): bool

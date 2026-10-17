@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Asisten;
 use App\Models\AuditLog;
 use App\Models\JawabanMandiri;
+use App\Models\JawabanSubmission;
 use App\Models\JawabanTp;
 use App\Models\Kelas;
 use App\Models\Modul;
@@ -118,10 +119,18 @@ class SoalHardDeleteTest extends TestCase
         $kelas = Kelas::factory()->create();
         $praktikan = Praktikan::factory()->create(['kelas_id' => $kelas->id]);
 
+        // jawaban_tps.submission_id is NOT NULL (FK to jawaban_submissions).
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikan->id,
+            'modul_id' => $soal->modul_id,
+            'tipe' => JawabanSubmission::TIPE_TP,
+        ]);
+
         return JawabanTp::create([
             'praktikan_id' => $praktikan->id,
             'soal_id' => $soal->id,
             'modul_id' => $soal->modul_id,
+            'submission_id' => $submission->id,
             'jawaban' => 'Jawaban praktikan untuk soal TP.',
         ]);
     }

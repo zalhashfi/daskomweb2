@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\JawabanMandiri;
+use App\Models\JawabanSubmission;
 use App\Models\JawabanTp;
 use App\Models\Modul;
 use App\Models\Praktikan;
@@ -184,10 +185,19 @@ class SoalFkRestrictTest extends TestCase
 
     private function createJawabanTp(SoalTp $soal, Modul $modul): JawabanTp
     {
+        $praktikanId = Praktikan::factory()->create()->id;
+
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikanId,
+            'modul_id' => $modul->id,
+            'tipe' => JawabanSubmission::TIPE_TP,
+        ]);
+
         return JawabanTp::create([
-            'praktikan_id' => Praktikan::factory()->create()->id,
+            'praktikan_id' => $praktikanId,
             'soal_id' => $soal->id,
             'modul_id' => $modul->id,
+            'submission_id' => $submission->id,
             'jawaban' => 'Jawaban praktikan untuk soal TP.',
         ]);
     }

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\JawabanSubmission;
 use App\Models\Praktikan;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -146,13 +147,39 @@ class AiPreflightDuplicatesTest extends TestCase
     {
         $table = $key === 'tp' ? 'jawaban_tps' : 'jawaban_mandiris';
 
-        return (int) DB::table($table)->insertGetId([
+        // jawaban_tps.submission_id is NOT NULL and unique per (submission_id,
+        // soal_id), so every requested answer row gets its own tp submission.
+        $attributes = [
             'praktikan_id' => $praktikanId,
             'modul_id' => $modulId,
             'soal_id' => $soalId,
             'jawaban' => 'Jawaban '.$key,
             'created_at' => now(),
             'updated_at' => now(),
-        ]);
+        ];
+
+        if ($key === 'tp') {
+            $attributes['submission_id'] = $this->makeTpSubmission($praktikanId, $modulId)->id;
+        }
+
+        return (int) DB::table($table)->insertGetId($attributes);
+    }
+
+    private function makeTpSubmission(int $praktikanId, int $modulId): JawabanSubmission
+    {
+        // (praktikan_id, modul_id, tipe, attempt_no) is unique, so every extra
+        // answer in the same slot becomes the next attempt.
+        $nextAttempt = (int) DB::table('jawaban_submissions')
+            ->where('praktikan_id', $praktikanId)
+            ->where('modul_id', $modulId)
+            ->where('tipe', JawabanSubmission::TIPE_TP)
+            ->max('attempt_no') + 1;
+
+        return JawabanSubmission::create([
+            'praktikan_id' => $praktikanId,
+            'modul_id' => $modulId,
+            'tipe' => JawabanSubmission::TIPE_TP,
+            'attempt_no' => $nextAttempt,
+        ])->fresh();
     }
 }
