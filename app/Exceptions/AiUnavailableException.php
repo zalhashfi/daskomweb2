@@ -34,6 +34,12 @@ class AiUnavailableException extends RuntimeException
     public const CODE_CONTRACT_VIOLATION = 'CONTRACT_VIOLATION';
 
     /**
+     * The assistant text is not the JSON verdict the prompt asked for
+     * (job-level decision; the transport itself was fine).
+     */
+    public const CODE_INVALID_JSON = 'INVALID_JSON';
+
+    /**
      * Temporary code for the T20b placeholder client; T20c removes it.
      */
     public const CODE_DRIVER_NOT_IMPLEMENTED = 'DRIVER_NOT_IMPLEMENTED';

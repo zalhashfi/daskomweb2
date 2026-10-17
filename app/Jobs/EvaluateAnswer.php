@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Exceptions\AiUnavailableException;
 use App\Models\AiConfig;
 use App\Models\AiEvaluation;
+use App\Models\AiEvaluationAttempt;
 use App\Models\JawabanMandiri;
 use App\Models\JawabanTp;
 use App\Models\SoalVersionItem;
@@ -13,6 +14,7 @@ use App\Services\Ai\AiGate;
 use App\Services\Ai\PromptBuilder;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -37,10 +39,19 @@ use Throwable;
  * `ai_evaluation_attempts` and its model is compared with `chat_model` so a
  * silent provider-side model change is surfaced as `model_drift`.
  *
+ * Failure contract (RETRYABLE_ERROR_CODES, spec E8 / E32):
+ *
+ *  - retryable provider failures (`EXTERNAL_UNAVAILABLE`, `EXTERNAL_RATE_LIMIT`,
+ *    `EXTERNAL_ERROR`, raw `ConnectionException`) leave the row `failed` with
+ *    its `error_code` + `finished_at` written and rethrow, so the queue keeps
+ *    retrying until `tries` is spent; the row is never upgraded to `done`;
+ *  - everything else (non-JSON output → `INVALID_JSON`, gate rejections,
+ *    `CONTEXT_OVERFLOW`, ...) writes `failed/<code>` + `finished_at` and does
+ *    not rethrow — the queue does not retry what cannot succeed.
+ *
+ * Every path that persists `failed` fills both `error_code` and `finished_at`.
+ *
  * Notes:
- * - `ai_evaluations` has no `error_code` / `verdict` column yet (owned by
- *   T22 / T23 migrations), so the stable code travels with the exception
- *   while the status alone is persisted; the verdict lives in raw_response.
  * - The stored `answer_hash` is recomputed from the answer actually used, so
  *   a truncation (spec E5) updates it on the same row — the row itself is
  *   never re-created.
@@ -67,6 +78,17 @@ class EvaluateAnswer implements ShouldQueue
     public int $timeout = 90;
 
     public const ERROR_CONTEXT_OVERFLOW = 'CONTEXT_OVERFLOW';
+
+    public const ERROR_INVALID_JSON = AiUnavailableException::CODE_INVALID_JSON;
+
+    /**
+     * Error codes worth another attempt on this row (spec E24 / E32).
+     */
+    public const RETRYABLE_ERROR_CODES = [
+        AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
+        AiUnavailableException::CODE_EXTERNAL_RATE_LIMIT,
+        AiUnavailableException::CODE_EXTERNAL_ERROR,
+    ];
 
     public const VERDICT_TIDAK_MENJAWAB = 'tidak_menjawab';
 
@@ -102,6 +124,31 @@ class EvaluateAnswer implements ShouldQueue
         } catch (Throwable $exception) {
             $this->fail($evaluation, $exception);
         }
+    }
+
+    /**
+     * The last attempt died with an uncaught error (provider still down,
+     * connection reset, ...). The row must still be terminal — and never
+     * `done` — with its code and finish time recorded.
+     */
+    public function failed(?Throwable $exception): void
+    {
+        $evaluation = AiEvaluation::query()->find($this->evaluation->getKey());
+
+        if ($evaluation === null || $evaluation->status === AiEvaluation::STATUS_DONE) {
+            return;
+        }
+
+        if ($evaluation->status === AiEvaluation::STATUS_FAILED
+            && $evaluation->error_code !== null
+            && $evaluation->finished_at !== null) {
+            return;
+        }
+
+        $this->failWithCode(
+            $evaluation,
+            $exception === null ? AiUnavailableException::CODE_EXTERNAL_ERROR : $this->errorCodeOf($exception),
+        );
     }
 
     private function evaluate(
@@ -178,13 +225,15 @@ class EvaluateAnswer implements ShouldQueue
         }
 
         $client = $manager->forChat($config);
-        $attemptNo = (int) $evaluation->attempts()->max('attempt_no') + 1;
+        $attempt = $this->recordAttempt($evaluation, [
+            'outcome' => 'pending',
+        ]);
         $startedAt = microtime(true);
 
         try {
             $response = $client->chat($messages);
         } catch (Throwable $exception) {
-            $this->recordAttempt($evaluation, $attemptNo, [
+            $this->settleAttempt($attempt, [
                 'http_status' => $this->httpStatusOf($exception),
                 'outcome' => 'failed',
                 'error_code' => $this->errorCodeOf($exception),
@@ -198,7 +247,26 @@ class EvaluateAnswer implements ShouldQueue
         $responseModel = $this->responseModelOf($response);
         $usage = $this->usageOf($response, $promptBuilder->flatten($messages), (string) $response['content']);
 
-        $this->recordAttempt($evaluation, $attemptNo, [
+        $parsed = $this->parseVerdict((string) $response['content'], (int) $item->max_score);
+
+        if ($parsed === null) {
+            $this->settleAttempt($attempt, [
+                'http_status' => 200,
+                'outcome' => 'failed',
+                'error_code' => self::ERROR_INVALID_JSON,
+                'response_model' => $responseModel,
+                'tokens_in' => $usage['tokens_in'],
+                'tokens_out' => $usage['tokens_out'],
+                'latency_ms' => $latencyMs,
+            ]);
+
+            throw new AiUnavailableException(
+                self::ERROR_INVALID_JSON,
+                'Respons model bukan JSON verdict yang valid.',
+            );
+        }
+
+        $this->settleAttempt($attempt, [
             'http_status' => 200,
             'outcome' => 'done',
             'response_model' => $responseModel,
@@ -206,8 +274,6 @@ class EvaluateAnswer implements ShouldQueue
             'tokens_out' => $usage['tokens_out'],
             'latency_ms' => $latencyMs,
         ]);
-
-        $parsed = $this->parseVerdict((string) $response['content'], (int) $item->max_score);
 
         $evaluation->forceFill([
             'status' => AiEvaluation::STATUS_DONE,
@@ -316,11 +382,12 @@ class EvaluateAnswer implements ShouldQueue
      * Accept the first JSON object found in the answer, validate the verdict
      * and clamp the score into [0, max_score].
      *
-     * @return array{verdict: string, score: float}
+     * Returns null when the text is not JSON carrying a known verdict; the
+     * caller turns that into `failed/INVALID_JSON`.
      *
-     * @throws AiUnavailableException
+     * @return array{verdict: string, score: float}|null
      */
-    private function parseVerdict(string $content, int $maxScore): array
+    private function parseVerdict(string $content, int $maxScore): ?array
     {
         $payload = json_decode(trim($content), true);
 
@@ -336,10 +403,7 @@ class EvaluateAnswer implements ShouldQueue
         $verdict = is_array($payload) ? ($payload['verdict'] ?? null) : null;
 
         if (! is_string($verdict) || ! in_array($verdict, PromptBuilder::VERDICTS, true)) {
-            throw new AiUnavailableException(
-                AiUnavailableException::CODE_CONTRACT_VIOLATION,
-                'Respons model bukan JSON verdict yang valid.',
-            );
+            return null;
         }
 
         $score = is_array($payload) ? ($payload['score'] ?? null) : null;
@@ -381,13 +445,27 @@ class EvaluateAnswer implements ShouldQueue
     }
 
     /**
+     * Open the attempt row BEFORE the provider call, so a timeout / crash
+     * still leaves one audit row per outbound request; `settleAttempt()`
+     * fills the outcome once it is known.
+     *
      * @param  array<string, mixed>  $attributes
      */
-    private function recordAttempt(AiEvaluation $evaluation, int $attemptNo, array $attributes): void
+    private function recordAttempt(AiEvaluation $evaluation, array $attributes = []): AiEvaluationAttempt
     {
-        $evaluation->attempts()->create(array_merge([
+        $attemptNo = (int) $evaluation->attempts()->max('attempt_no') + 1;
+
+        return $evaluation->attempts()->create(array_merge([
             'attempt_no' => $attemptNo,
         ], $attributes));
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function settleAttempt(AiEvaluationAttempt $attempt, array $attributes): void
+    {
+        $attempt->forceFill($attributes)->save();
     }
 
     private function elapsedMs(float $startedAt): int
@@ -410,6 +488,10 @@ class EvaluateAnswer implements ShouldQueue
 
     private function errorCodeOf(Throwable $exception): string
     {
+        if ($exception instanceof ConnectionException) {
+            return AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE;
+        }
+
         $method = method_exists($exception, 'getErrorCode') ? 'getErrorCode' : 'errorCode';
 
         if (method_exists($exception, $method)) {
@@ -420,12 +502,31 @@ class EvaluateAnswer implements ShouldQueue
             }
         }
 
+        // Laravel's own auth/permission guards carry a STATUS_<code> constant.
+        $code = $exception->getCode();
+
+        if (is_int($code) && defined($exception::class.'::STATUS_'.$code)) {
+            return (string) constant($exception::class.'::STATUS_'.$code);
+        }
+
         return AiUnavailableException::CODE_EXTERNAL_ERROR;
     }
 
+    /**
+     * Persist `failed/<code>` with `finished_at`. Retryable provider outages
+     * are rethrown so the queue retries this row (the row is already failed,
+     * and stays failed until a later attempt succeeds); every other failure
+     * ends here — no provider retry can fix it.
+     */
     private function fail(AiEvaluation $evaluation, Throwable $exception): void
     {
-        $this->failWithCode($evaluation, $this->errorCodeOf($exception));
+        $errorCode = $this->errorCodeOf($exception);
+
+        $this->failWithCode($evaluation, $errorCode);
+
+        if (in_array($errorCode, self::RETRYABLE_ERROR_CODES, true)) {
+            throw $exception;
+        }
     }
 
     private function failWithCode(AiEvaluation $evaluation, string $errorCode): void
