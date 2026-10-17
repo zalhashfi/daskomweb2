@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Adapter\ImageKitAdapter;
 use App\Models\Nilai;
 use App\Observers\NilaiObserver;
+use App\Services\Ai\AiClientManager;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
@@ -19,7 +20,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Stateless driver resolver: singleton, never touches the DB. AiClient
+        // itself is intentionally not bound; the manager picks the concrete
+        // client per call from the chat / embed driver column.
+        $this->app->singleton(AiClientManager::class);
     }
 
     /**
