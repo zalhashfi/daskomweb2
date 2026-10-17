@@ -167,20 +167,26 @@ class AssistantAnswerEndpointsTest extends TestCase
                 'soal' => 'Jelaskan prosedur keselamatan kerja di laboratorium.',
             ]);
 
-        // jawaban_mandiris.submission_id is NOT NULL (FK to jawaban_submissions).
+        // jawaban_mandiris.submission_id is NOT NULL (FK to jawaban_submissions)
+        // and POST /api-v1/jawaban-tm now always creates a numbered attempt via
+        // SubmissionWriter, so the fixture mirrors that exact shape.
         $submission = JawabanSubmission::create([
             'praktikan_id' => $praktikan->id,
             'modul_id' => $modul->id,
             'tipe' => JawabanSubmission::TIPE_TM,
+            'attempt_no' => 1,
+            'locked_at' => null,
         ]);
 
-        JawabanMandiri::create([
+        $jawaban = JawabanMandiri::create([
             'submission_id' => $submission->id,
             'praktikan_id' => $praktikan->id,
             'modul_id' => $modul->id,
             'soal_id' => $soal->id,
             'jawaban' => 'Menggunakan APD dan membaca SOP sebelum mulai.',
         ]);
+
+        $submission->forceFill(['jawaban_id' => $jawaban->id])->save();
 
         $response = $this->getJson("/api-v1/jawaban-mandiri/praktikan/{$praktikan->id}/modul/{$modul->id}");
 

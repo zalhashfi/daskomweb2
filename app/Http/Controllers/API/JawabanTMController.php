@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Exceptions\JawabanSubmissionLockedException;
 use App\Http\Controllers\Controller;
 use App\Models\JawabanMandiri;
+use App\Models\JawabanSubmission;
 use App\Models\Modul;
+use App\Services\Jawaban\SubmissionWriter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -13,6 +16,8 @@ use Illuminate\Validation\ValidationException;
 
 class JawabanTMController extends Controller
 {
+    public function __construct(private readonly SubmissionWriter $submissionWriter) {}
+
     /**
      * Display a listing of the resource.
      */
@@ -44,26 +49,29 @@ class JawabanTMController extends Controller
             }
 
             $first = $entries->first();
-            $praktikanId = $first['praktikan_id'];
-            $modulId = $first['modul_id'];
 
-            JawabanMandiri::where('praktikan_id', $praktikanId)
-                ->where('modul_id', $modulId)
-                ->delete();
-
-            foreach ($entries as $entry) {
-                JawabanMandiri::create([
-                    'praktikan_id' => $praktikanId,
-                    'modul_id' => $modulId,
+            $submission = $this->submissionWriter->write(
+                JawabanSubmission::TIPE_TM,
+                (int) $first['praktikan_id'],
+                (int) $first['modul_id'],
+                $entries->map(fn (array $entry): array => [
                     'soal_id' => $entry['soal_id'],
                     'jawaban' => $entry['jawaban'],
-                ]);
-            }
+                ])->all(),
+            );
 
             return response()->json([
                 'status' => 'success',
-                'message' => 'Jawaban berhasil disimpan.',
+                'submission_id' => $submission->id,
+                'attempt_no' => $submission->attempt_no,
             ], 201);
+        } catch (JawabanSubmissionLockedException $e) {
+            return response()->json([
+                'status' => 'error',
+                'code' => 'SUBMISSION_LOCKED',
+                'submission_id' => $e->submissionId,
+                'locked_at' => $e->lockedAt->toIso8601String(),
+            ], 409);
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Throwable $e) {
