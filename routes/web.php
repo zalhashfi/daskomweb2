@@ -280,6 +280,12 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     // Route::put('/modul/{id}', [ModulController::class, 'update'])->name('update.modul')->middleware(['auth:asisten', 'can:manage-modul']);
     Route::patch('/modul/{id}', [ModulController::class, 'update'])->name('modul.update')->middleware(['auth:asisten', 'can:manage-modul']);
     Route::delete('/modul/{id}', [ModulController::class, 'destroy'])->name('delete.modul')->middleware(['auth:asisten', 'can:manage-modul']);
+    Route::post('/modul/reset', [ModulController::class, 'reset'])
+        ->name('modul.reset')
+        ->middleware(['auth:asisten', 'can:manage-modul']);
+    Route::post('/modul/{id}/reset', [ModulController::class, 'reset'])
+        ->name('modul.reset.by-id')
+        ->middleware(['auth:asisten', 'can:manage-modul']);
 
     Route::get('/anomalies/attendance', [AnomalyController::class, 'attendance'])
         ->name('anomalies.attendance')

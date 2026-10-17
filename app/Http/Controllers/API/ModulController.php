@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Models\JawabanSubmission;
 use App\Models\Modul;
 use App\Models\Resource;
 use App\Models\Tugaspendahuluan;
@@ -263,38 +264,216 @@ class ModulController extends BaseController
     //        }
     //    }
 
-    public function reset()
+    /**
+     * Reset the submission/evaluation data of one or more moduls.
+     *
+     * Only the moduls listed in the request are touched; every other modul
+     * keeps its data. The deletion is ordered child-first so the real foreign
+     * keys (no SET FOREIGN_KEY_CHECKS=0, no TRUNCATE) are always satisfied:
+     *
+     *   1. ai_evaluation_attempts  (belongs to the modul's evaluations)
+     *   2. ai_evaluations          (of the answers of those moduls)
+     *   3. jawaban_tps / jawaban_mandiris
+     *   4. jawaban_submissions
+     *   5. submission_unlocks      (of the deleted submissions)
+     *
+     * Everything runs inside one DB::transaction, so a failure halfway
+     * through rolls every table back to its previous row count.
+     *
+     * Query parameters: `modul_id` (alias `id`) or `modul_ids[]`; a `{id}`
+     * route parameter is accepted as well. Without any target the request is
+     * rejected with 422, so a typo can never wipe every modul.
+     */
+    public function reset(Request $request, $id = null)
     {
-        try {
-            DB::statement('SET FOREIGN_KEY_CHECKS=0;');
-            Modul::query()->delete();
-            DB::table('jawaban_fitbs')->truncate();
-            DB::table('jawaban_jurnals')->truncate();
-            DB::table('jawaban_mandiris')->truncate();
-            DB::table('jawaban_tas')->truncate();
-            DB::table('jawaban_tks')->truncate();
-            DB::table('jawaban_tps')->truncate();
-            DB::table('kumpul_tps')->truncate();
-            DB::table('nilais')->truncate();
-            DB::table('praktikums')->truncate();
-            DB::table('resources')->truncate();
-            DB::table('soal_fitbs')->truncate();
-            DB::table('soal_jurnals')->truncate();
-            DB::table('soal_mandiris')->truncate();
-            DB::table('soal_tas')->truncate();
-            DB::table('soal_tks')->truncate();
-            DB::table('soal_tps')->truncate();
-            DB::table('temp_jawabantps')->truncate();
-            DB::table('tugaspendahuluans')->truncate();
-            DB::statement('SET FOREIGN_KEY_CHECKS=1;');
+        $modulIds = $this->resetTargetModulIds($request, $id);
 
-            return response()->json(['message' => 'Modul table and related data reset successfully.'], 200);
-        } catch (\Exception $e) {
+        if ($modulIds === []) {
+            return response()->json([
+                'message' => 'Parameter modul_id wajib diisi.',
+            ], 422);
+        }
+
+        try {
+            $deleted = DB::transaction(function () use ($modulIds): array {
+                return $this->deleteModulSubmissionData($modulIds);
+            });
+
+            return response()->json([
+                'message' => 'Modul and its submission data reset successfully.',
+                'modul_ids' => $modulIds,
+                'deleted' => $deleted,
+            ], 200);
+        } catch (\Throwable $e) {
             return response()->json([
                 'message' => 'An error occurred during the reset process.',
                 'error' => $e->getMessage(),
             ], 500); // Server error
         }
+    }
+
+    /**
+     * Ordered, FK-safe deletion for the given moduls. Runs inside the
+     * caller's transaction and returns the number of rows removed per table.
+     *
+     * @param  list<int>  $modulIds
+     * @return array<string, int>
+     */
+    private function deleteModulSubmissionData(array $modulIds): array
+    {
+        $deleted = [
+            'ai_evaluation_attempts' => 0,
+            'ai_evaluations' => 0,
+            'jawaban_tps' => 0,
+            'jawaban_mandiris' => 0,
+            'jawaban_submissions' => 0,
+            'submission_unlocks' => 0,
+        ];
+
+        // Answer rows of the target moduls, per `jawaban_type` (tp / tm).
+        $answersByType = [
+            JawabanSubmission::TIPE_TP => [
+                'table' => 'jawaban_tps',
+                'ids' => $this->chunkedColumn('jawaban_tps', 'modul_id', $modulIds),
+            ],
+            JawabanSubmission::TIPE_TM => [
+                'table' => 'jawaban_mandiris',
+                'ids' => $this->chunkedColumn('jawaban_mandiris', 'modul_id', $modulIds),
+            ],
+        ];
+
+        // 1 + 2. Evaluations owned by those answers (matched by the
+        // (jawaban_type, jawaban_id) pair, so an id shared between the two
+        // answer tables can never pull in another modul's evaluation), and
+        // the attempts belonging to them.
+        $evaluationIds = [];
+
+        foreach ($answersByType as $tipe => $answers) {
+            if ($answers['ids'] === []) {
+                continue;
+            }
+
+            foreach (array_chunk($answers['ids'], 500) as $idChunk) {
+                $chunkEvaluationIds = DB::table('ai_evaluations')
+                    ->where('jawaban_type', $tipe)
+                    ->whereIn('jawaban_id', $idChunk)
+                    ->pluck('id')
+                    ->map(fn ($value): int => (int) $value)
+                    ->all();
+
+                $evaluationIds = array_merge($evaluationIds, $chunkEvaluationIds);
+            }
+        }
+
+        $evaluationIds = array_values(array_unique($evaluationIds));
+
+        if ($evaluationIds !== []) {
+            $deleted['ai_evaluation_attempts'] = $this->deleteByChunks(
+                'ai_evaluation_attempts',
+                'ai_evaluation_id',
+                $evaluationIds
+            );
+
+            $deleted['ai_evaluations'] = $this->deleteByChunks(
+                'ai_evaluations',
+                'id',
+                $evaluationIds
+            );
+        }
+
+        // 3. Answer rows of the target moduls.
+        foreach ($answersByType as $answers) {
+            if ($answers['ids'] !== []) {
+                $deleted[$answers['table']] = $this->deleteByChunks($answers['table'], 'id', $answers['ids']);
+            }
+        }
+
+        // 4. Submissions of the target moduls.
+        $submissionIds = $this->chunkedColumn('jawaban_submissions', 'modul_id', $modulIds);
+
+        $deleted['jawaban_submissions'] = $submissionIds === []
+            ? 0
+            : $this->deleteByChunks('jawaban_submissions', 'id', $submissionIds);
+
+        // 5. Unlock audit rows pointing at those submissions.
+        $deleted['submission_unlocks'] = $submissionIds === []
+            ? 0
+            : $this->deleteByChunks('submission_unlocks', 'submission_id', $submissionIds);
+
+        return $deleted;
+    }
+
+    /**
+     * All values of $column in $table whose $filterColumn is in $filterValues,
+     * fetched in chunks to keep the IN() list bounded.
+     *
+     * @param  list<int>  $filterValues
+     * @return list<int>
+     */
+    private function chunkedColumn(string $table, string $filterColumn, array $filterValues): array
+    {
+        $ids = [];
+
+        foreach (array_chunk($filterValues, 500) as $chunk) {
+            foreach (DB::table($table)->whereIn($filterColumn, $chunk)->pluck('id') as $id) {
+                $ids[] = (int) $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * Delete every row of $table whose $column is in $values, in chunks.
+     *
+     * @param  list<int>  $values
+     */
+    private function deleteByChunks(string $table, string $column, array $values): int
+    {
+        $deleted = 0;
+
+        foreach (array_chunk($values, 500) as $chunk) {
+            $deleted += DB::table($table)->whereIn($column, $chunk)->delete();
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * Resolve the modul ids the reset applies to from the request body/query
+     * and the optional route parameter.
+     *
+     * @return list<int>
+     */
+    private function resetTargetModulIds(Request $request, mixed $id): array
+    {
+        $candidates = [];
+
+        foreach ([$id, $request->input('modul_id'), $request->input('id')] as $single) {
+            if (is_scalar($single) && $single !== '' && $single !== null) {
+                $candidates[] = $single;
+            }
+        }
+
+        $many = $request->input('modul_ids', $request->input('modulIds', []));
+
+        if (is_array($many)) {
+            $candidates = array_merge($candidates, $many);
+        } elseif (is_scalar($many) && $many !== '') {
+            $candidates[] = $many;
+        }
+
+        $ids = [];
+
+        foreach ($candidates as $candidate) {
+            if (! is_numeric($candidate) || (int) $candidate <= 0) {
+                continue;
+            }
+
+            $ids[] = (int) $candidate;
+        }
+
+        return array_values(array_unique($ids));
     }
 
     public function updateStatus(Request $request)
