@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\JawabanVerdictResource;
+use App\Models\AiEvaluation;
 use App\Models\JawabanSubmission;
 use App\Models\JawabanTp as JawabanTps;
 use App\Models\Modul;
@@ -170,31 +172,54 @@ class JawabanTPController extends Controller
             ], 404);
         }
 
-        $jawabanList = JawabanTps::where('praktikan_id', $praktikan->id)
+        // The latest attempt of this (praktikan, modul, 'tp') slot. Its
+        // answers, not every answer ever written, are the ones displayed.
+        $submission = JawabanSubmission::query()
+            ->where('praktikan_id', $praktikan->id)
             ->where('modul_id', $modulId)
-            ->get()
-            ->keyBy('soal_id');
+            ->where('tipe', JawabanSubmission::TIPE_TP)
+            ->orderByDesc('attempt_no')
+            ->orderByDesc('id')
+            ->first();
 
-        $jawabanData = [];
+        $jawabanList = $submission === null
+            ? collect()
+            : JawabanTps::where('submission_id', $submission->id)
+                ->orderBy('id')
+                ->get()
+                ->keyBy('soal_id');
 
-        foreach ($soalList as $soal) {
-            $jawaban = isset($jawabanList[$soal->id]) ? $jawabanList[$soal->id]->jawaban : '-';
+        return new JawabanVerdictResource([
+            'praktikan' => $praktikan,
+            'modul' => $modul,
+            'submission' => $submission,
+            'soal' => $soalList,
+            'jawaban' => $jawabanList,
+            'evaluations' => $this->evaluationsFor($submission, $jawabanList),
+            'provider_status' => null,
+        ]);
+    }
 
-            $jawabanData[] = [
-                'soal_id' => $soal->id,
-                'soal_text' => $soal->soal,
-                'jawaban' => $jawaban,
-            ];
+    /**
+     * Canonical evaluation rows of this submission's answers, keyed by
+     * answer id (newest row wins). Public columns only: the withheld ones
+     * (`raw_response`, `cited_chunk_ids`) are never loaded, let alone sent.
+     *
+     * @param  Collection<int, JawabanTps>  $jawabanList
+     * @return Collection<int, AiEvaluation>
+     */
+    private function evaluationsFor(?JawabanSubmission $submission, Collection $jawabanList): Collection
+    {
+        if ($submission === null || $jawabanList->isEmpty()) {
+            return collect();
         }
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'jawabanData' => $jawabanData,
-                'praktikan' => $praktikan,
-                'modul' => $modul,
-            ],
-        ]);
+        return AiEvaluation::query()
+            ->where('jawaban_type', $submission->tipe)
+            ->whereIn('jawaban_id', $jawabanList->pluck('id')->map(fn ($id): int => (int) $id)->all())
+            ->orderByDesc('id')
+            ->get(['id', 'jawaban_id', 'jawaban_type', 'status', 'verdict', 'alasan', 'max_score'])
+            ->keyBy('jawaban_id');
     }
 
     // Show jawaban for asisten
