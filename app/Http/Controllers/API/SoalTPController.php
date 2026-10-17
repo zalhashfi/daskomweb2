@@ -4,6 +4,8 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\SoalTp;
+use App\Services\AuditLogger;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class SoalTPController extends Controller
@@ -119,11 +121,11 @@ class SoalTPController extends Controller
         }
     }
 
-    public function destroy(string $id)
+    public function destroy(Request $request, string $id)
     {
         try {
             // Cek apakah soal ada
-            $soal = SoalTp::find($id);
+            $soal = SoalTp::withTrashed()->find($id);
             if (! $soal) {
                 return response()->json([
                     'message' => "Soal dengan ID $id tidak ditemukan.",
@@ -140,6 +142,10 @@ class SoalTPController extends Controller
                 ], 409);
             }
 
+            if ($request->query('force') === '1') {
+                return $this->forceDeleteSoal($soal, $id);
+            }
+
             $soal->delete();
 
             return response()->json([
@@ -151,6 +157,43 @@ class SoalTPController extends Controller
                 'error' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Hapus permanen soal TP beserta jejak auditnya.
+     */
+    private function forceDeleteSoal(SoalTp $soal, string $id): JsonResponse
+    {
+        $asisten = auth('asisten')->user();
+
+        if (! $asisten || ! $asisten->hasPermissionTo('manage-role', 'asisten')) {
+            return response()->json([
+                'code' => 'FORBIDDEN',
+                'message' => 'Anda tidak memiliki izin untuk menghapus soal secara permanen.',
+            ], 403);
+        }
+
+        $soalTeks = $soal->soal;
+        $modulId = $soal->modul_id;
+        $soal->forceDelete();
+
+        app(AuditLogger::class)->record(
+            action: 'soal.hard_delete',
+            description: "Soal TP dengan ID $id dihapus permanen.",
+            context: [
+                'model' => 'soal_tp',
+                'soal' => $soalTeks,
+                'modul_id' => $modulId,
+            ],
+            subjectType: 'soal',
+            subjectId: (int) $id,
+            actorType: 'asisten',
+            actorId: $asisten->id,
+        );
+
+        return response()->json([
+            'status' => 'success',
+        ], 200);
     }
 
     public function reset()
