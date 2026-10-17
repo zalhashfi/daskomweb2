@@ -16,9 +16,11 @@ use Illuminate\Database\Eloquent\Model;
  * @property int $praktikan_id
  * @property int $soal_id
  * @property int $modul_id
+ * @property int $submission_id
  * @property string $jawaban
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
+ * @property JawabanSubmission $submission
  * @property Modul $modul
  * @property Praktikan $praktikan
  * @property SoalMandiri $soal_mandiri
@@ -31,14 +33,21 @@ class JawabanMandiri extends Model
         'praktikan_id' => 'int',
         'soal_id' => 'int',
         'modul_id' => 'int',
+        'submission_id' => 'int',
     ];
 
     protected $fillable = [
         'praktikan_id',
         'soal_id',
         'modul_id',
+        'submission_id',
         'jawaban',
     ];
+
+    public function submission()
+    {
+        return $this->belongsTo(JawabanSubmission::class, 'submission_id');
+    }
 
     public function modul()
     {
