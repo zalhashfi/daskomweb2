@@ -216,6 +216,11 @@ class SoalVersionSetModelTest extends TestCase
         $this->assertTrue(Schema::hasTable('soal_version_sets'));
         $this->assertTrue(Schema::hasTable('soal_version_items'));
 
+        // jawaban_submissions.version_set_id (T23a) references soal_version_sets,
+        // so its migration must be reverted first or MySQL refuses the drop.
+        $bindingDown = $this->loadMigration('2026_10_17_250000_add_version_set_id_to_jawaban_submissions_table');
+        $bindingDown->down();
+
         $this->runMigration('down');
 
         $this->assertFalse(Schema::hasTable('soal_version_items'), 'down() harus menghapus soal_version_items.');
@@ -223,6 +228,8 @@ class SoalVersionSetModelTest extends TestCase
         $this->assertTrue(Schema::hasTable('moduls'), 'down() tidak boleh menyentuh tabel lain.');
 
         $this->runMigration('up');
+
+        $this->loadMigration('2026_10_17_250000_add_version_set_id_to_jawaban_submissions_table')->up();
 
         $this->assertTrue(Schema::hasTable('soal_version_sets'), 'up() harus membuat ulang tabel sets.');
         $this->assertTrue(Schema::hasTable('soal_version_items'), 'up() harus membuat ulang tabel items.');
@@ -291,6 +298,16 @@ class SoalVersionSetModelTest extends TestCase
         }
 
         $this->fail('Expected the database to reject the duplicate row.');
+    }
+
+    private function loadMigration(string $name): object
+    {
+        $path = collect(glob(database_path('migrations/*.php')))
+            ->first(fn (string $file): bool => str_contains(basename($file), $name));
+
+        $this->assertNotNull($path, "Migration {$name} not found.");
+
+        return require $path;
     }
 
     private function runMigration(string $direction): void

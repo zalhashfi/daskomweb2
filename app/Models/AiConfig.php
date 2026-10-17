@@ -135,9 +135,13 @@ class AiConfig extends Model
      */
     private function allowsExternalPayload(): bool
     {
-        $value = $this->getRawOriginal('allow_external_payload');
+        // Prefer the value as stored in the database; fall back to the
+        // attribute being set when the model has not been persisted yet.
+        $raw = $this->getRawOriginal('allow_external_payload');
+        $value = $raw !== null ? $raw : $this->getAttributes()['allow_external_payload'] ?? null;
 
-        if ($value === true) {
+        // `true` and the storage values MySQL uses for a boolean column.
+        if ($value === true || $value === 1 || $value === '1') {
             return true;
         }
 
@@ -145,7 +149,9 @@ class AiConfig extends Model
             return false;
         }
 
-        return filter_var($value, FILTER_VALIDATE_BOOL) === true;
+        // Only the explicit affirmative spellings are accepted; anything else
+        // (`'false'`, `'0'`, `''`, `null`) fails closed.
+        return in_array(strtolower(trim((string) $value)), ['true', 'on', 'yes'], true);
     }
 
     protected static function booted(): void
