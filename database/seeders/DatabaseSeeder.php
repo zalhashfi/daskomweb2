@@ -26,6 +26,7 @@ class DatabaseSeeder extends Seeder
     {
         // First seeding
         $this->call(RolePermissionsSeeder::class);
+        $this->call(AiConfigSeeder::class);
 
         Modul::factory(20)->create();
 

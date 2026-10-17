@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Exceptions\ExternalPayloadDisabledException;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -101,6 +102,46 @@ class AiConfig extends Model
             'budget_tokens_per_modul' => 0,
             'is_active' => true,
         ]);
+    }
+
+    /**
+     * Guard executed before any content leaves the system: outbound payloads
+     * are only allowed when `allow_external_payload` is explicitly true.
+     *
+     * A null / 0 / 'false' value (including a raw row inserted without the
+     * column) fails closed with ExternalPayloadDisabledException.
+     *
+     * @throws ExternalPayloadDisabledException
+     */
+    public function assertPayloadPolicy(): void
+    {
+        if ($this->allowsExternalPayload()) {
+            return;
+        }
+
+        throw new ExternalPayloadDisabledException;
+    }
+
+    /**
+     * Whitelist test for `allow_external_payload`, read from the RAW column
+     * value (never the boolean cast: `(bool) 'false'` is true).
+     *
+     * Accepted: true, 1, '1', 'true', 'on', 'yes'. Rejected: null, 0, '0',
+     * 'false', '' (spec §7.8 - the guard fails closed).
+     */
+    private function allowsExternalPayload(): bool
+    {
+        $value = $this->getAttributes()['allow_external_payload'] ?? null;
+
+        if ($value === true) {
+            return true;
+        }
+
+        if (! is_scalar($value)) {
+            return false;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOL) === true;
     }
 
     protected static function booted(): void
