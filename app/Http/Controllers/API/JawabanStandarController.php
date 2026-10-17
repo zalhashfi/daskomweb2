@@ -10,6 +10,7 @@ use App\Models\SoalMandiri;
 use App\Models\SoalTp;
 use App\Models\SoalVersionItem;
 use App\Models\SoalVersionSet;
+use App\Services\Soal\JawabanStandarApprovalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
@@ -27,12 +28,72 @@ use Illuminate\Support\Facades\DB;
  *   exceed 100                           => 422 BOBOT_TIDAK_100 (per_type)
  *
  * On success the item goes back to `pending` with approved_by/approved_at and
- * reject_reason cleared, so a previously approved kunci must be re-approved
- * (the dual-control flow itself is T17 and lives elsewhere).
+ * reject_reason cleared, so a previously approved kunci must be re-approved.
+ * The acting assistant is stored as jawaban_standar_created_by.
+ *
+ * POST /api-v1/soal-version-items/{id}/jawaban-standar/approve (T17, dual-control)
+ * is handled by approve().
  */
 class JawabanStandarController extends Controller
 {
     public const BOBOT_TARGET_TOTAL = 100;
+
+    public function __construct(private readonly JawabanStandarApprovalService $approvalService) {}
+
+    /**
+     * POST /api-v1/soal-version-items/{id}/jawaban-standar/approve
+     *
+     * - 404 ITEM_NOT_FOUND          : no such item
+     * - 403 FORBIDDEN               : actor lacks SOFTWARE/DDC/ADMIN role
+     * - 403 SELF_APPROVAL_FORBIDDEN : actor wrote the kunci
+     * - 409 INVALID_STATUS          : status is not `pending`
+     */
+    public function approve($id): JsonResponse
+    {
+        $item = SoalVersionItem::query()->find($id);
+
+        if (! $item) {
+            return response()->json([
+                'status' => 'error',
+                'code' => 'ITEM_NOT_FOUND',
+                'message' => "Item versi soal #{$id} tidak ditemukan.",
+            ], 404);
+        }
+
+        if ($item->jawaban_standar_status !== SoalVersionItem::STATUS_PENDING) {
+            return $this->invalidStatus();
+        }
+
+        $result = $this->approvalService->approve($item, auth('asisten')->user());
+
+        return match ($result['code'] ?? null) {
+            'FORBIDDEN' => response()->json([
+                'status' => 'error',
+                'code' => 'FORBIDDEN',
+                'message' => 'Hanya SOFTWARE, DDC, atau ADMIN yang dapat menyetujui kunci jawaban.',
+            ], 403),
+            'SELF_APPROVAL_FORBIDDEN' => response()->json([
+                'status' => 'error',
+                'code' => 'SELF_APPROVAL_FORBIDDEN',
+                'message' => 'Pembuat kunci jawaban tidak boleh menyetujui kunci yang ia buat sendiri.',
+            ], 403),
+            'INVALID_STATUS' => $this->invalidStatus(),
+            default => response()->json([
+                'status' => 'success',
+                'message' => 'Kunci jawaban berhasil disetujui.',
+                'data' => $result['item'],
+            ], 200),
+        };
+    }
+
+    private function invalidStatus(): JsonResponse
+    {
+        return response()->json([
+            'status' => 'error',
+            'code' => 'INVALID_STATUS',
+            'message' => 'Hanya kunci jawaban berstatus pending yang dapat disetujui.',
+        ], 409);
+    }
 
     /**
      * PUT /api-v1/soal-tp/{idSoal}/jawaban-standar
@@ -110,10 +171,13 @@ class JawabanStandarController extends Controller
             }
         }
 
-        DB::transaction(function () use ($item, $validated, $bobot) {
+        $createdBy = auth('asisten')->id();
+
+        DB::transaction(function () use ($item, $validated, $bobot, $createdBy) {
             $attributes = [
                 'jawaban_standar' => $validated['jawaban_standar'],
                 'jawaban_standar_status' => SoalVersionItem::STATUS_PENDING,
+                'jawaban_standar_created_by' => $createdBy,
                 'jawaban_standar_approved_by' => null,
                 'jawaban_standar_approved_at' => null,
                 'reject_reason' => null,

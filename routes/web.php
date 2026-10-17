@@ -344,6 +344,12 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
         ->name('upsert.jawaban-standar.tm')
         ->middleware(['auth:asisten', 'permission:manage-soal']);
 
+    // Kunci Jawaban dual-control (SPEC 02-01 §7.4, T17): role check lives in the
+    // controller so non-approver roles get JSON 403 FORBIDDEN.
+    Route::post('/soal-version-items/{id}/jawaban-standar/approve', [JawabanStandarController::class, 'approve'])
+        ->name('approve.jawaban-standar.item')
+        ->middleware(['auth:asisten']);
+
     // Soal TP
     Route::get('/soal-tp/{idModul}', [SoalTPController::class, 'show'])->name('show.soaltp')->middleware(['auth:asisten,praktikan', 'permission:see-soal|lihat-modul']);
     Route::post('/soal-tp/{idModul}', [SoalTPController::class, 'store'])->name('store.soaltp')->middleware(['auth:asisten', 'can:manage-soal']);

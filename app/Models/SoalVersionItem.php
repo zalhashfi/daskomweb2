@@ -21,6 +21,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $teks_snapshot
  * @property string|null $jawaban_standar
  * @property string $jawaban_standar_status
+ * @property int|null $jawaban_standar_created_by
  * @property int|null $jawaban_standar_approved_by
  * @property Carbon|null $jawaban_standar_approved_at
  * @property string|null $reject_reason
@@ -51,6 +52,7 @@ class SoalVersionItem extends Model
         'teks_snapshot',
         'jawaban_standar',
         'jawaban_standar_status',
+        'jawaban_standar_created_by',
         'jawaban_standar_approved_by',
         'jawaban_standar_approved_at',
         'reject_reason',
@@ -66,6 +68,7 @@ class SoalVersionItem extends Model
             'soal_id' => 'integer',
             'bobot' => 'integer',
             'max_score' => 'integer',
+            'jawaban_standar_created_by' => 'integer',
             'jawaban_standar_approved_by' => 'integer',
             'jawaban_standar_approved_at' => 'datetime',
         ];
