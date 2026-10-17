@@ -71,12 +71,11 @@ return new class extends Migration {
         }
 
         // Tolerate a partially-applied state: only drop what actually exists.
-        if ($this->hasUniqueIndex()) {
-            Schema::table($this->table, function (Blueprint $table) {
-                $table->dropUnique($this->uniqueIndex);
-            });
-        }
-
+        //
+        // The composite unique index on (modul_id, category) backs the foreign
+        // key on modul_id. MySQL refuses to drop an index a foreign key still
+        // depends on, so the FK is released first and re-created after the
+        // column drop, restoring the table to its pre-migration shape.
         $existing = $this->existingColumns([
             'category',
             'easy_count',
@@ -85,9 +84,30 @@ return new class extends Migration {
             'enabled',
         ]);
 
+        $foreignKey = $this->table.'_modul_id_foreign';
+        $hadForeignKey = $this->hasForeignKey($foreignKey);
+
+        if ($hadForeignKey) {
+            Schema::table($this->table, function (Blueprint $table) use ($foreignKey) {
+                $table->dropForeign($foreignKey);
+            });
+        }
+
         if ($existing !== []) {
             Schema::table($this->table, function (Blueprint $table) use ($existing) {
                 $table->dropColumn($existing);
+            });
+        }
+
+        if ($this->hasUniqueIndex()) {
+            Schema::table($this->table, function (Blueprint $table) {
+                $table->dropUnique($this->uniqueIndex);
+            });
+        }
+
+        if ($hadForeignKey && Schema::hasColumn($this->table, 'modul_id')) {
+            Schema::table($this->table, function (Blueprint $table) {
+                $table->foreign('modul_id')->references('id')->on('moduls')->cascadeOnDelete();
             });
         }
     }
@@ -114,6 +134,35 @@ return new class extends Migration {
             $columns,
             fn (string $column): bool => Schema::hasColumn($this->table, $column),
         ));
+    }
+
+    /**
+     * Whether the given foreign key exists on the table.
+     */
+    protected function hasForeignKey(string $name): bool
+    {
+        $driver = Schema::getConnection()->getDriverName();
+
+        if ($driver === 'mysql' || $driver === 'mariadb') {
+            $result = DB::selectOne(
+                'select count(*) as aggregate from information_schema.table_constraints
+                 where constraint_schema = database()
+                   and table_name = ?
+                   and constraint_name = ?
+                   and constraint_type = ?',
+                [$this->table, $name, 'FOREIGN KEY'],
+            );
+
+            return (int) ($result->aggregate ?? 0) > 0;
+        }
+
+        foreach (Schema::getForeignKeys($this->table) as $key) {
+            if (($key['name'] ?? null) === $name) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
