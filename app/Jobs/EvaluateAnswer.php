@@ -2,7 +2,11 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\AiDisabledException;
 use App\Exceptions\AiUnavailableException;
+use App\Exceptions\ExternalPayloadDisabledException;
+use App\Exceptions\ProviderPolicyUnverifiedException;
+use App\Exceptions\UnknownDriverException;
 use App\Models\AiConfig;
 use App\Models\AiEvaluation;
 use App\Models\AiEvaluationAttempt;
@@ -33,23 +37,33 @@ use Throwable;
  *  1. row already terminal          → no-op
  *  2. another modul is ahead (FIFO) → release(), row unchanged, 0 request
  *  3. AiGate + payload policy       → failed/<errorCode>, 0 request
- *  4. kunci missing / not approved  → key_pending, 0 request
- *  5. empty answer ('', '-')        → done / tidak_menjawab, 0 request
- *  6. token estimate over budget    → failed/CONTEXT_OVERFLOW, 0 request
+ *  4. chat driver not whitelisted   → failed/EXTERNAL_PAYLOAD_DISABLED, 0 request
+ *  5. kunci missing / not approved  → key_pending, 0 request
+ *  6. empty answer ('', '-')        → done / tidak_menjawab, 0 request
+ *  7. token estimate over budget    → failed/CONTEXT_OVERFLOW, 0 request
  *
  * Only the happy path reaches the provider; each call is recorded in
  * `ai_evaluation_attempts` and its model is compared with `chat_model` so a
  * silent provider-side model change is surfaced as `model_drift`.
  *
- * Failure contract (RETRYABLE_ERROR_CODES, spec E8 / E32):
+ * Failure contract (RETRYABLE_ERROR_CODES, spec E8 / E24 / E32):
  *
- *  - retryable provider failures (`EXTERNAL_UNAVAILABLE`, `EXTERNAL_RATE_LIMIT`,
- *    `EXTERNAL_ERROR`, raw `ConnectionException`) leave the row `failed` with
- *    its `error_code` + `finished_at` written and rethrow, so the queue keeps
- *    retrying until `tries` is spent; the row is never upgraded to `done`;
+ *  - `EXTERNAL_RATE_LIMIT` (429) and `EXTERNAL_UNAVAILABLE` (503) are queue
+ *    signals, not row failures: the row keeps its non-terminal status and the
+ *    job `release()`s itself honouring the provider's `retry-after` —
+ *    `RELEASE_ERROR_CODES`, at most `MAX_RELEASES` times, which does not spend
+ *    `tries`. Once that budget is exhausted (or without a queue connection:
+ *    called directly) the outage becomes `failed/<code>` + rethrow;
+ *  - the remaining retryable provider failures (`EXTERNAL_ERROR`, raw
+ *    `ConnectionException`) leave the row `failed` with its `error_code` +
+ *    `finished_at` written and rethrow, so the queue keeps retrying until
+ *    `tries` is spent; the row is never upgraded to `done`;
  *  - everything else (non-JSON output → `INVALID_JSON`, gate rejections,
  *    `CONTEXT_OVERFLOW`, ...) writes `failed/<code>` + `finished_at` and does
  *    not rethrow — the queue does not retry what cannot succeed.
+ *
+ * There is no fallback provider (`fallback_driver` is always null): a failure
+ * is surfaced, never routed to another driver.
  *
  * Every path that persists `failed` fills both `error_code` and `finished_at`.
  *
@@ -84,13 +98,64 @@ class EvaluateAnswer implements ShouldQueue
     public const ERROR_INVALID_JSON = AiUnavailableException::CODE_INVALID_JSON;
 
     /**
-     * Error codes worth another attempt on this row (spec E24 / E32).
+     * Drives the chat request may use. The whitelist is deliberately explicit:
+     * only a driver named here may receive answer text, so an unknown value
+     * fails closed instead of being delegated to some other provider.
+     */
+    public const EXTERNAL_DRIVERS = [
+        AiClientManager::DRIVER_OPENAI_COMPATIBLE,
+    ];
+
+    /**
+     * Error codes worth another attempt on this row (spec E8).
      */
     public const RETRYABLE_ERROR_CODES = [
         AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
         AiUnavailableException::CODE_EXTERNAL_RATE_LIMIT,
         AiUnavailableException::CODE_EXTERNAL_ERROR,
     ];
+
+    /**
+     * Provider outages handled as a long `release()` instead of spending
+     * `tries` (spec E24 / E32): the queue waits out a rate limit / 503.
+     */
+    public const RELEASE_ERROR_CODES = [
+        AiUnavailableException::CODE_EXTERNAL_RATE_LIMIT,
+        AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
+    ];
+
+    /**
+     * `release()` ceiling for 429/503 (spec E32: max 10), counted per
+     * evaluation row, independently of `tries`.
+     */
+    public const MAX_RELEASES = 10;
+
+    /**
+     * Release delay when the provider sends no usable `retry-after`.
+     */
+    public const DEFAULT_RELEASE_DELAY_SECONDS = 60;
+
+    /**
+     * Release delay cap: a provider must not park the queue for hours.
+     */
+    public const MAX_RELEASE_DELAY_SECONDS = 3600;
+
+    /**
+     * Queue attempts spent so far on this row, persisted on the evaluation
+     * (callable without a queue connection, so it also works in tests).
+     */
+    public int $queueAttempts = 1;
+
+    /**
+     * 429/503 responses already released for this row.
+     */
+    public int $queueReleases = 0;
+
+    /**
+     * Error code that triggered the last `release()`; null when the row is
+     * terminal or the job went through without releasing.
+     */
+    public ?string $releasedFor = null;
 
     public const VERDICT_TIDAK_MENJAWAB = 'tidak_menjawab';
 
@@ -118,6 +183,10 @@ class EvaluateAnswer implements ShouldQueue
         ?ModuleQueueGuard $queueGuard = null,
     ): void {
         $evaluation = AiEvaluation::query()->find($this->evaluation->getKey());
+
+        $this->queueAttempts = max($this->queueAttempts, $this->queueAttempt());
+        $this->queueReleases = (int) ($evaluation?->release_count ?? 0);
+        $this->releasedFor = null;
 
         if ($evaluation === null || $evaluation->isTerminal()) {
             return;
@@ -158,7 +227,7 @@ class EvaluateAnswer implements ShouldQueue
             'active_modul_id' => $queueGuard->activeModulId(),
         ]);
 
-        $this->release(ModuleQueueGuard::RELEASE_DELAY_SECONDS);
+        $this->putBackOnQueue($evaluation, ModuleQueueGuard::RELEASE_DELAY_SECONDS);
 
         return true;
     }
@@ -202,10 +271,12 @@ class EvaluateAnswer implements ShouldQueue
         PromptBuilder $promptBuilder,
     ): void {
         $config = $this->resolveConfig($evaluation);
+        $config->setAttribute('driver', trim((string) $config->driver));
 
         try {
             $gate->assertEnabled($config);
             $config->assertPayloadPolicy();
+            $this->assertExternalDriver($config->driver);
         } catch (Throwable $exception) {
             $this->failWithCode($evaluation, $this->errorCodeOf($exception));
 
@@ -532,6 +603,25 @@ class EvaluateAnswer implements ShouldQueue
 
     private function errorCodeOf(Throwable $exception): string
     {
+        // Whitelist rejections carry their own stable code; ProviderPolicyUnverified
+        // extends ExternalPayloadDisabled, so it must be checked first.
+        if ($exception instanceof ProviderPolicyUnverifiedException) {
+            return ProviderPolicyUnverifiedException::ERROR_CODE;
+        }
+
+        if ($exception instanceof AiDisabledException) {
+            return AiDisabledException::ERROR_CODE;
+        }
+
+        if ($exception instanceof ExternalPayloadDisabledException) {
+            return ExternalPayloadDisabledException::ERROR_CODE;
+        }
+
+        // A missing/unknown driver can never receive the payload.
+        if ($exception instanceof UnknownDriverException) {
+            return ExternalPayloadDisabledException::ERROR_CODE;
+        }
+
         if ($exception instanceof ConnectionException) {
             return AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE;
         }
@@ -557,19 +647,151 @@ class EvaluateAnswer implements ShouldQueue
     }
 
     /**
-     * Persist `failed/<code>` with `finished_at`. Retryable provider outages
-     * are rethrown so the queue retries this row (the row is already failed,
-     * and stays failed until a later attempt succeeds); every other failure
-     * ends here — no provider retry can fix it.
+     * Whitelist for outbound payloads: `allow_external_payload` and the gate
+     * already said yes, so the only driver left to bless is the chat driver
+     * itself. Anything outside EXTERNAL_DRIVERS (or a missing driver) is
+     * treated as "payload disabled" and answered locally — never by silently
+     * falling back to another provider.
+     */
+    private function assertExternalDriver(?string $driver): void
+    {
+        if ($driver !== null && in_array($driver, self::EXTERNAL_DRIVERS, true)) {
+            return;
+        }
+
+        throw new ExternalPayloadDisabledException(
+            'Driver AI "'.($driver ?? '').'" tidak termasuk daftar driver eksternal yang diizinkan.'
+        );
+    }
+
+    /**
+     * Persist `failed/<code>` with `finished_at` and decide whether the queue
+     * should see this again.
+     *
+     *  - 429 / 503 while there is a queue to wait in → `release()` (page the
+     *    row, honour `retry-after`, do not spend `tries`) up to MAX_RELEASES;
+     *  - retryable provider outages after that → rethrow for the normal
+     *    `tries`/backoff retry;
+     *  - everything else ends here — no provider retry can fix it.
      */
     private function fail(AiEvaluation $evaluation, Throwable $exception): void
     {
         $errorCode = $this->errorCodeOf($exception);
 
+        if ($this->isRetryLater($errorCode) && $this->queueReleases < self::MAX_RELEASES) {
+            $this->releaseForLater($evaluation, $exception, $errorCode);
+
+            return;
+        }
+
         $this->failWithCode($evaluation, $errorCode);
 
         if (in_array($errorCode, self::RETRYABLE_ERROR_CODES, true)) {
             throw $exception;
+        }
+    }
+
+    /**
+     * 429 / 503 are queue signals: wait them out instead of burning `tries`.
+     */
+    private function isRetryLater(string $errorCode): bool
+    {
+        return in_array($errorCode, self::RELEASE_ERROR_CODES, true);
+    }
+
+    /**
+     * Put the row back on the queue unchanged (still `processing`, so it is
+     * not terminal) and release the job. The counter is persisted on the row
+     * so the MAX_RELEASES ceiling holds across worker restarts and retries.
+     *
+     * Without a queue connection (job invoked directly) `release()` does
+     * nothing, so the caller must fall back to `failed/<code>`.
+     */
+    private function releaseForLater(AiEvaluation $evaluation, Throwable $exception, string $errorCode): void
+    {
+        if (! $this->hasQueueConnection()) {
+            $this->failWithCode($evaluation, $errorCode);
+
+            throw $exception;
+        }
+
+        $releaseCount = $this->queueReleases + 1;
+        $evaluation->forceFill([
+            'status' => AiEvaluation::STATUS_PROCESSING,
+            'release_count' => $releaseCount,
+        ])->save();
+
+        $this->releasedFor = $errorCode;
+        $this->queueReleases = $releaseCount;
+
+        Log::warning('ai.evaluation_released', [
+            'ai_evaluation_id' => $evaluation->getKey(),
+            'error_code' => $errorCode,
+            'release_count' => $releaseCount,
+            'max_releases' => self::MAX_RELEASES,
+            'delay_seconds' => $this->releaseDelayFor($exception),
+        ]);
+
+        $this->putBackOnQueue($evaluation, $this->releaseDelayFor($exception));
+    }
+
+    /**
+     * The provider's `retry-after` when it sent one, otherwise the job's own
+     * backoff for this queue attempt, clamped to MAX_RELEASE_DELAY_SECONDS.
+     */
+    private function releaseDelayFor(Throwable $exception): int
+    {
+        $retryAfter = $exception instanceof AiUnavailableException ? $exception->retryAfter : null;
+
+        if ($retryAfter !== null) {
+            $delay = $retryAfter;
+        } else {
+            $backoff = $this->backoff;
+            $delay = (int) ($backoff[min(max($this->queueAttempts, 1), count($backoff)) - 1]
+                ?? self::DEFAULT_RELEASE_DELAY_SECONDS);
+        }
+
+        return max(0, min($delay, self::MAX_RELEASE_DELAY_SECONDS));
+    }
+
+    /**
+     * `release()` the underlying queue job (no-op without one) and account
+     * for the release on the row.
+     */
+    private function putBackOnQueue(AiEvaluation $evaluation, int $delay): void
+    {
+        if (! $this->hasQueueConnection()) {
+            return;
+        }
+
+        $releaseCount = $this->queueReleases;
+
+        if ($evaluation->release_count === null || (int) $evaluation->release_count < $releaseCount) {
+            $evaluation->forceFill(['release_count' => $releaseCount])->save();
+        }
+
+        $this->release($delay);
+    }
+
+    private function hasQueueConnection(): bool
+    {
+        return property_exists($this, 'job') && $this->job !== null;
+    }
+
+    /**
+     * Attempts the worker has already spent on this job; 1 when called
+     * directly (no queue job).
+     */
+    private function queueAttempt(): int
+    {
+        if (! $this->hasQueueConnection()) {
+            return 1;
+        }
+
+        try {
+            return max(1, (int) $this->attempts());
+        } catch (Throwable) {
+            return 1;
         }
     }
 

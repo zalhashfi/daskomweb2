@@ -62,6 +62,7 @@ class AiEvaluation extends Model
         'tokens_in',
         'tokens_out',
         'latency_ms',
+        'release_count',
     ];
 
     protected $hidden = [
@@ -79,6 +80,7 @@ class AiEvaluation extends Model
         'model_drift' => 'boolean',
         'tokens_in' => 'integer',
         'tokens_out' => 'integer',
+        'release_count' => 'integer',
         'latency_ms' => 'integer',
         'confidence' => 'decimal:2',
         'cited_chunk_ids' => 'array',

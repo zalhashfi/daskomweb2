@@ -123,15 +123,19 @@ class AiConfig extends Model
     }
 
     /**
-     * Whitelist test for `allow_external_payload`, read from the RAW column
-     * value (never the boolean cast: `(bool) 'false'` is true).
+     * Whitelist test for `allow_external_payload`, read from the value as it
+     * was loaded/set (never the boolean cast: `(bool) 'false'` is true).
+     *
+     * Uses `getRawOriginal()` because the `boolean` cast rewrites the raw
+     * attribute on assignment/hydration (`'false'` → true); the value is
+     * therefore read from the row as the database holds it.
      *
      * Accepted: true, 1, '1', 'true', 'on', 'yes'. Rejected: null, 0, '0',
      * 'false', '' (spec §7.8 - the guard fails closed).
      */
     private function allowsExternalPayload(): bool
     {
-        $value = $this->getAttributes()['allow_external_payload'] ?? null;
+        $value = $this->getRawOriginal('allow_external_payload');
 
         if ($value === true) {
             return true;
