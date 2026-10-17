@@ -19,6 +19,10 @@ class AuditLog extends Model
         'route',
         'method',
         'description',
+        'subject_type',
+        'subject_id',
+        'actor_type',
+        'actor_id',
         'metadata',
         'ip_address',
         'user_agent',
@@ -30,6 +34,8 @@ class AuditLog extends Model
     protected function casts(): array
     {
         return [
+            'subject_id' => 'integer',
+            'actor_id' => 'integer',
             'metadata' => 'array',
         ];
     }
