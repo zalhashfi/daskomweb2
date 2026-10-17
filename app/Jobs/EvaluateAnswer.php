@@ -302,6 +302,7 @@ class EvaluateAnswer implements ShouldQueue
             $evaluation->forceFill([
                 'status' => AiEvaluation::STATUS_DONE,
                 'verdict' => self::VERDICT_TIDAK_MENJAWAB,
+                'alasan' => 'Tidak dijawab.',
                 'finished_at' => now(),
                 'ai_score' => 0,
                 'raw_response' => json_encode([
@@ -323,6 +324,9 @@ class EvaluateAnswer implements ShouldQueue
         $answer = $this->truncateAnswer($answer, $this->maxAnswerChars($config));
         $evaluation->forceFill(['answer_hash' => hash('sha256', $answer)])->save();
 
+        // The answer is always fenced by the builder (which escapes any
+        // closing delimiter inside it), so a practican cannot end the block
+        // early and smuggle instructions into the prompt.
         $messages = $promptBuilder->build([
             'soal' => (string) $item->teks_snapshot,
             'kunci' => (string) $item->jawaban_standar,
@@ -330,7 +334,8 @@ class EvaluateAnswer implements ShouldQueue
             'max_score' => (int) $item->max_score,
         ]);
 
-        $estimatedTokens = $this->estimateTokens($promptBuilder->flatten($messages));
+        $flatPrompt = $promptBuilder->flatten($messages);
+        $estimatedTokens = $this->estimateTokens($flatPrompt);
 
         if ($estimatedTokens > (int) $config->max_context_tokens) {
             throw new AiUnavailableException(
@@ -360,7 +365,7 @@ class EvaluateAnswer implements ShouldQueue
 
         $latencyMs = $this->elapsedMs($startedAt);
         $responseModel = $this->responseModelOf($response);
-        $usage = $this->usageOf($response, $promptBuilder->flatten($messages), (string) $response['content']);
+        $usage = $this->usageOf($response, $flatPrompt, (string) $response['content']);
 
         $parsed = $this->parseVerdict((string) $response['content'], (int) $item->max_score);
 
@@ -393,6 +398,7 @@ class EvaluateAnswer implements ShouldQueue
         $evaluation->forceFill([
             'status' => AiEvaluation::STATUS_DONE,
             'verdict' => $parsed['verdict'],
+            'alasan' => $parsed['alasan'] ?? null,
             'finished_at' => now(),
             'ai_score' => $parsed['score'],
             'max_score' => (int) $item->max_score,
@@ -500,7 +506,7 @@ class EvaluateAnswer implements ShouldQueue
      * Returns null when the text is not JSON carrying a known verdict; the
      * caller turns that into `failed/INVALID_JSON`.
      *
-     * @return array{verdict: string, score: float}|null
+     * @return array{verdict: string, score: float, alasan: string|null}|null
      */
     private function parseVerdict(string $content, int $maxScore): ?array
     {
@@ -524,9 +530,12 @@ class EvaluateAnswer implements ShouldQueue
         $score = is_array($payload) ? ($payload['score'] ?? null) : null;
         $score = is_numeric($score) ? (float) $score : ($verdict === self::VERDICT_TIDAK_MENJAWAB ? 0.0 : (float) $maxScore);
 
+        $alasan = is_array($payload) ? ($payload['alasan'] ?? null) : null;
+
         return [
             'verdict' => $verdict,
             'score' => round(max(0.0, min((float) $maxScore, $score)), 2),
+            'alasan' => is_string($alasan) && trim($alasan) !== '' ? trim($alasan) : null,
         ];
     }
 

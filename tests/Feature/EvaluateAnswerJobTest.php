@@ -65,7 +65,7 @@ class EvaluateAnswerJobTest extends TestCase
         ]);
 
         $modul = Modul::factory()->create();
-        $praktikan = Praktikan::factory()->create();
+        $praktikan = $this->praktikan();
 
         $this->soal = SoalTp::factory()->create([
             'modul_id' => $modul->id,
@@ -311,9 +311,12 @@ class EvaluateAnswerJobTest extends TestCase
         $this->assertStringContainsString('bukan instruksi', $system);
         $this->assertStringContainsString('JSON', $system);
         $this->assertStringContainsString('jawaban_praktikan', $user);
-        $this->assertStringNotContainsString((string) $this->jawaban->praktikan_id, $user.$system);
+        // Identity is asserted on the prompt the job actually built (TP).
         $this->assertStringNotContainsString((string) $this->jawaban->praktikan->nim, $user.$system);
         $this->assertStringNotContainsString($this->jawaban->praktikan->nama, $user.$system);
+        $this->assertStringNotContainsString('praktikan_id', $user.$system);
+        $this->assertStringNotContainsString('888888888888', $user.$system);
+        $this->assertStringNotContainsString('Praktikan Rahasia Uji', $user.$system);
         $this->assertSame(0, PromptBuilder::RETRIEVAL_TOP_K);
     }
 
@@ -325,7 +328,7 @@ class EvaluateAnswerJobTest extends TestCase
     {
         Http::fake([
             self::BASE_URL.'/v1/chat/completions' => Http::response(
-                $this->chatCompletion($this->verdictJson('berbeda', 40), ['usage' => [
+                $this->chatCompletion($this->verdictJson('sebagian_sesuai', 40), ['usage' => [
                     'prompt_tokens' => 512,
                     'completion_tokens' => 32,
                 ]]),
@@ -379,7 +382,7 @@ class EvaluateAnswerJobTest extends TestCase
     {
         Http::fake([
             self::BASE_URL.'/v1/chat/completions' => Http::response(
-                $this->chatCompletion($this->verdictJson('berbeda', -25)),
+                $this->chatCompletion($this->verdictJson('tidak_sesuai', -25)),
                 200
             ),
         ]);
@@ -457,6 +460,56 @@ class EvaluateAnswerJobTest extends TestCase
         $this->assertSame('70.00', $evaluation->fresh()->ai_score);
     }
 
+    public function test_tm_prompt_carries_no_identity(): void
+    {
+        $modul = Modul::query()->findOrFail($this->soal->modul_id);
+        $soal = SoalMandiri::factory()->create(['modul_id' => $modul->id]);
+        $jawaban = JawabanMandiri::query()->create([
+            'praktikan_id' => $this->jawaban->praktikan_id,
+            'soal_id' => $soal->id,
+            'modul_id' => $modul->id,
+            'submission_id' => $this->submission($this->jawaban->praktikan, $modul, 'tm')->id,
+            'jawaban' => 'Jawaban tugas mandiri untuk pemeriksaan identitas.',
+        ]);
+
+        SoalVersionItem::create([
+            'version_set_id' => $this->versionSet->id,
+            'soal_type' => SoalVersionItem::SOAL_TM,
+            'soal_id' => $soal->id,
+            'bobot' => 0,
+            'max_score' => 100,
+            'teks_snapshot' => $soal->soal,
+            'jawaban_standar' => 'Kunci tugas mandiri.',
+            'jawaban_standar_status' => SoalVersionItem::STATUS_APPROVED,
+        ]);
+
+        $payload = null;
+
+        Http::fake([
+            self::BASE_URL.'/v1/chat/completions' => function (Request $request) use (&$payload) {
+                $payload = $request->data();
+
+                return Http::response($this->chatCompletion($this->verdictJson('sesuai', 70)), 200);
+            },
+        ]);
+
+        $evaluation = $this->queuedEvaluation([
+            'jawaban_id' => $jawaban->id,
+            'jawaban_type' => 'tm',
+        ]);
+
+        $this->runJob($evaluation);
+
+        Http::assertSentCount(1);
+        $prompt = (string) $payload['messages'][1]['content'];
+        $praktikan = $jawaban->praktikan;
+
+        $this->assertSame('888888888888', (string) $praktikan->nim);
+        $this->assertStringNotContainsString((string) $praktikan->nim, $prompt);
+        $this->assertStringNotContainsString((string) $praktikan->nama, $prompt);
+        $this->assertStringNotContainsString('praktikan_id', $prompt);
+    }
+
     // ---------------------------------------------------------------------
     // Row ownership
     // ---------------------------------------------------------------------
@@ -518,6 +571,20 @@ class EvaluateAnswerJobTest extends TestCase
      *
      * @param  array<string, mixed>  $attributes
      */
+    /**
+     * A praktikan whose `nim` cannot collide with prompt scaffolding
+     * (`max_score: 100`, the JSON schema, ...) by coincidence. The
+     * auto-increment id is only 1-2 digits, so a bare id assertion would be
+     * satisfied by an unrelated number in the prompt.
+     */
+    private function praktikan(): Praktikan
+    {
+        return Praktikan::factory()->create([
+            'nama' => 'Praktikan Rahasia Uji',
+            'nim' => '888888888888',
+        ]);
+    }
+
     private function queuedEvaluation(array $attributes = []): AiEvaluation
     {
         return AiEvaluation::query()->create(array_merge([
