@@ -4,6 +4,8 @@ namespace App\Services\Jawaban;
 
 use App\Exceptions\DuplicateSoalException;
 use App\Exceptions\JawabanSubmissionLockedException;
+use App\Jobs\EvaluateAnswer;
+use App\Models\AiEvaluation;
 use App\Models\JawabanSubmission;
 use App\Models\Praktikan;
 use App\Models\SoalVersionSet;
@@ -34,7 +36,6 @@ class SubmissionWriter
     public const MAX_CREATE_ATTEMPTS = 2;
 
     public function __construct(private readonly EvaluationChokepoint $evaluations) {}
-
 
     /**
      * Driver error numbers that mean "duplicate key for a unique index".
@@ -117,9 +118,42 @@ class SubmissionWriter
 
         // Chokepoint (T23a): rows are created inside this transaction so a
         // rollback leaves neither answers nor evaluations behind.
-        $this->evaluations->createQueuedEvaluations($submission, $answerIds);
+        $created = $this->evaluations->createQueuedEvaluations($submission, $answerIds);
+
+        if ($created > 0) {
+            $this->dispatchAfterCommit($submission, $answerIds);
+        }
 
         return $submission;
+    }
+
+    /**
+     * T27: one EvaluateAnswer job per `queued` row this submit created.
+     *
+     * Only `queued` rows are dispatched — an attachment answer is stored as
+     * `manual_required` by the chokepoint and must never reach the job.
+     *
+     * The dispatch is registered as an after-commit callback, folded into the
+     * ROOT transaction level, so a rolled back submit pushes nothing.
+     *
+     * @param  list<int>  $answerIds
+     */
+    private function dispatchAfterCommit(JawabanSubmission $submission, array $answerIds): void
+    {
+        $evaluations = AiEvaluation::query()
+            ->where('jawaban_type', $submission->tipe)
+            ->whereIn('jawaban_id', $answerIds)
+            ->where('status', AiEvaluation::STATUS_QUEUED)
+            ->orderBy('id')
+            ->get();
+
+        $dispatch = function () use ($evaluations): void {
+            foreach ($evaluations as $evaluation) {
+                EvaluateAnswer::dispatch($evaluation);
+            }
+        };
+
+        DB::afterCommit($dispatch);
     }
 
     /**
@@ -210,5 +244,4 @@ class SubmissionWriter
         return in_array($code, self::UNIQUE_DRIVER_ERROR_CODES, true)
             || ((string) $exception->getCode() === '23000' && str_contains($exception->getMessage(), '1062'));
     }
-
 }

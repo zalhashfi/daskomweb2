@@ -427,11 +427,13 @@ class JawabanVerdictResponseTest extends TestCase
 
     /**
      * Run EvaluateAnswer::handle() for every queued row of the submission —
-     * the queue itself is faked, so nothing is dispatched.
+     * the queue itself is faked, so the T27 dispatch is only recorded.
      */
     private function runJobsFor(JawabanSubmission $submission): void
     {
-        Queue::assertNothingPushed();
+        // T27 dispatches one job per queued row after commit; this helper runs
+        // the rows itself instead of the queue.
+        Queue::assertPushed(EvaluateAnswer::class, 2);
 
         $rows = AiEvaluation::query()
             ->where('jawaban_type', JawabanSubmission::TIPE_TP)

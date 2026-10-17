@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\EvaluateAnswer;
 use App\Models\AiConfig;
 use App\Models\AiEvaluation;
 use App\Models\JawabanSubmission;
@@ -151,7 +152,8 @@ class SubmissionVersionBindingTest extends TestCase
         $this->assertSame(2, AiEvaluation::query()->whereIn('jawaban_id', $this->answerIdsOf($second))->count());
         $this->assertSame(3, AiEvaluation::query()->count());
 
-        Queue::assertNothingPushed();
+        // T27 dispatches one job per queued row AFTER commit.
+        Queue::assertPushed(EvaluateAnswer::class, 3);
     }
 
     public function test_answer_hash_uses_answer_text_truncated_to_max_answer_chars(): void
@@ -178,6 +180,10 @@ class SubmissionVersionBindingTest extends TestCase
 
     public function test_attachment_answer_creates_exactly_one_manual_required_row(): void
     {
+        // QUEUE_CONNECTION=sync in phpunit.xml: without a fake, the queued
+        // text answer would be evaluated inside the test and stop being queued.
+        Queue::fake();
+
         $praktikan = $this->actingAsPraktikan();
         $modul = Modul::factory()->create();
         $v2 = $this->versionSet($modul, 2, now()->utc());
