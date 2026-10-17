@@ -3,9 +3,11 @@
 namespace App\Http\Resources;
 
 use App\Models\AiEvaluation;
+use App\Models\JawabanMandiri;
 use App\Models\JawabanSubmission;
 use App\Models\Modul;
 use App\Models\Praktikan;
+use App\Models\SoalMandiri;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Collection;
@@ -56,6 +58,69 @@ class JawabanVerdictResource extends JsonResource
     public function __construct(array $resource)
     {
         parent::__construct($resource);
+    }
+
+    /**
+     * Same envelope for the TM (jawaban mandiri) read endpoint of the
+     * assistant screen (SPEC 02-01 §7.2, T23b).
+     *
+     *   GET /api-v1/jawaban-mandiri/praktikan/{praktikan}/modul/{modul}
+     *
+     * Only the selection differs from TP: the latest `tm` attempt, its
+     * `jawaban_mandiris` rows and every question of the modul. Evaluations
+     * are matched on the ANSWER ROW id (`jawaban_mandiris.id`), never on
+     * `soal_id`.
+     */
+    public static function forMandiri(Praktikan $praktikan, Modul $modul): self
+    {
+        $submission = JawabanSubmission::query()
+            ->where('praktikan_id', $praktikan->id)
+            ->where('modul_id', $modul->id)
+            ->where('tipe', JawabanSubmission::TIPE_TM)
+            ->orderByDesc('attempt_no')
+            ->orderByDesc('id')
+            ->first();
+
+        $jawaban = $submission === null
+            ? collect()
+            : JawabanMandiri::query()
+                ->where('submission_id', $submission->id)
+                ->orderBy('id')
+                ->get()
+                ->keyBy('soal_id');
+
+        return new self([
+            'praktikan' => $praktikan,
+            'modul' => $modul,
+            'submission' => $submission,
+            'soal' => SoalMandiri::query()->where('modul_id', $modul->id)->orderBy('id')->get(),
+            'jawaban' => $jawaban,
+            'evaluations' => self::evaluationsFor($submission, $jawaban),
+            'provider_status' => null,
+        ]);
+    }
+
+    /**
+     * Canonical evaluation rows of the given answers, keyed by the ANSWER ROW
+     * id `jawabanList->pluck('id')` (never by `soal_id`), newest row wins.
+     * Public columns only: `raw_response`, `cited_chunk_ids`, `ai_score` and
+     * `confidence` are never loaded.
+     *
+     * @param  Collection<int, object>  $jawabanList  rows carrying `id`
+     * @return Collection<int, AiEvaluation>
+     */
+    public static function evaluationsFor(?JawabanSubmission $submission, Collection $jawabanList): Collection
+    {
+        if ($submission === null || $jawabanList->isEmpty()) {
+            return collect();
+        }
+
+        return AiEvaluation::query()
+            ->where('jawaban_type', $submission->tipe)
+            ->whereIn('jawaban_id', $jawabanList->pluck('id')->map(fn ($id): int => (int) $id)->all())
+            ->orderByDesc('id')
+            ->get(['id', 'jawaban_id', 'jawaban_type', 'status', 'verdict', 'alasan', 'max_score'])
+            ->keyBy('jawaban_id');
     }
 
     /**

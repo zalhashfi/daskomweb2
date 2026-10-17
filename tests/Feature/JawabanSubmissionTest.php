@@ -38,6 +38,43 @@ class JawabanSubmissionTest extends TestCase
         $this->withoutMiddleware();
     }
 
+    /**
+     * Some tests deliberately commit the RefreshDatabase wrapper, so their
+     * rows survive RefreshDatabase's rollback. The cleanup is registered as
+     * an application-destroyed callback by those tests, which runs after the
+     * trait rolled the transaction back, so no enclosing transaction is
+     * active when the truncate happens.
+     */
+    private function scheduleCommittedRowPurge(): void
+    {
+        $this->beforeApplicationDestroyed(fn () => $this->purgeCommittedRows());
+    }
+
+    private function purgeCommittedRows(): void
+    {
+        $connection = DB::connection();
+        $database = $connection->getDatabaseName();
+
+        $connection->unprepared('SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0');
+
+        foreach ([
+            'ai_evaluation_attempts',
+            'ai_evaluations',
+            'jawaban_tps',
+            'jawaban_submissions',
+            'submission_unlocks',
+            'soal_tps',
+            'praktikans',
+            'moduls',
+        ] as $table) {
+            if ($connection->getSchemaBuilder()->hasTable($table)) {
+                $connection->statement("TRUNCATE TABLE `{$database}`.`{$table}`");
+            }
+        }
+
+        $connection->unprepared('SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS');
+    }
+
     public function test_first_submit_creates_attempt_one(): void
     {
         $praktikan = $this->actingAsPraktikan();
@@ -344,21 +381,11 @@ class JawabanSubmissionTest extends TestCase
 
         DB::commit();
 
+        $this->scheduleCommittedRowPurge();
+
         $connection = DB::connection();
         $database = $connection->getDatabaseName();
 
-        $this->beforeApplicationDestroyed(function () use ($connection, $database): void {
-            $statement = 'SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0';
-            $connection->unprepared($statement);
-
-            foreach (['jawaban_tps', 'jawaban_submissions', 'soal_tps', 'praktikans', 'moduls'] as $table) {
-                if ($connection->getSchemaBuilder()->hasTable($table)) {
-                    $connection->statement("TRUNCATE TABLE `{$database}`.`{$table}`");
-                }
-            }
-
-            $connection->unprepared('SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS');
-        });
     }
 
     private function fakeWriter(): SubmissionWriter

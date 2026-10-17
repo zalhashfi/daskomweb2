@@ -190,10 +190,14 @@ class AssistantAnswerEndpointsTest extends TestCase
 
         $response = $this->getJson("/api-v1/jawaban-mandiri/praktikan/{$praktikan->id}/modul/{$modul->id}");
 
-        $response->assertOk()->assertJsonFragment(['success' => true]);
-        $response->assertJsonPath('jawaban_mandiri.0.soal_id', $soal->id);
-        $response->assertJsonPath('jawaban_mandiri.0.soal_text', $soal->soal);
-        $response->assertJsonPath('jawaban_mandiri.0.jawaban', 'Menggunakan APD dan membaca SOP sebelum mulai.');
+        $response->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.submission.id', $submission->id)
+            ->assertJsonPath('data.jawabanData.0.soal_id', $soal->id)
+            ->assertJsonPath('data.jawabanData.0.soal_text', $soal->soal)
+            ->assertJsonPath('data.jawabanData.0.jawaban', 'Menggunakan APD dan membaca SOP sebelum mulai.')
+            ->assertJsonPath('data.jawabanData.0.ai.status', 'no_submission')
+            ->assertJsonPath('data.jawabanData.0.ai.verdict', null);
     }
 
     public function test_assistant_can_fetch_jurnal_answers_with_question_text(): void

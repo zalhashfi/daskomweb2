@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\JawabanVerdictResource;
 use App\Models\JawabanMandiri;
 use App\Models\JawabanSubmission;
 use App\Models\Modul;
+use App\Models\Praktikan;
 use App\Services\Jawaban\SubmissionWriter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -141,25 +143,33 @@ class JawabanTMController extends Controller
         ], 200);
     }
 
-    public function showAsisten(int $praktikanId, int $modulId): JsonResponse
+    /**
+     * Jawaban TM + verdict AI for the assistant answer screen (SPEC §7.2,
+     * T23b). Same envelope as the TP endpoint: `data.jawabanData[]` with an
+     * `ai` block per answer. A praktikan without submission/answers still
+     * answers 200 — every question then carries `ai.status = no_submission`.
+     */
+    public function showAsisten(int $praktikanId, int $modulId): JawabanVerdictResource|JsonResponse
     {
-        $jawaban = JawabanMandiri::with('soal_mandiri')
-            ->where('praktikan_id', $praktikanId)
-            ->where('modul_id', $modulId)
-            ->get()
-            ->map(function (JawabanMandiri $item) {
-                return [
-                    'soal_id' => $item->soal_id,
-                    'soal_text' => $item->soal_mandiri?->soal,
-                    'jawaban' => $item->jawaban,
-                ];
-            })
-            ->values();
+        $praktikan = Praktikan::query()->find($praktikanId);
 
-        return response()->json([
-            'success' => true,
-            'jawaban_mandiri' => $jawaban,
-        ]);
+        if ($praktikan === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Praktikan tidak ditemukan',
+            ], 404);
+        }
+
+        $modul = Modul::query()->find($modulId);
+
+        if ($modul === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Modul tidak ditemukan',
+            ], 404);
+        }
+
+        return JawabanVerdictResource::forMandiri($praktikan, $modul);
     }
 
     /**
