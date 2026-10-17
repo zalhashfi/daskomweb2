@@ -9,6 +9,7 @@ use App\Http\Controllers\API\JadwalJagaController;
 use App\Http\Controllers\API\JawabanFITBController;
 use App\Http\Controllers\API\JawabanJurnalController;
 use App\Http\Controllers\API\JawabanStandarController;
+use App\Http\Controllers\API\JawabanSubmissionUnlockController;
 use App\Http\Controllers\API\JawabanTAController;
 use App\Http\Controllers\API\JawabanTKController;
 use App\Http\Controllers\API\JawabanTMController;
@@ -322,6 +323,11 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     // Polling View Count
     Route::get('/polling/{id}', [PollingsController::class, 'show'])->name('show.polling')->middleware(['auth:asisten,praktikan']);
 
+    // Jawaban Submission (kadiv unlock, requires a reason >= 15 chars)
+    Route::post('/jawaban-submissions/{id}/unlock', [JawabanSubmissionUnlockController::class, 'unlock'])
+        ->name('unlock.jawaban-submission')
+        ->middleware(['auth:asisten', 'permission:unlock-jawaban-submission']);
+
     // Soal Version Sets (SPEC 02-01 §7.4)
     Route::post('/soal-version-sets/{id}/approve', [SoalVersionSetController::class, 'approve'])
         ->name('approve.soal-version-set')
@@ -502,6 +508,10 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
 Route::get('/health', HealthController::class)->name('health');
 
 Route::fallback(function () {
+    if (app(\App\Exceptions\RenderApiException::class)->isApiRequest(request())) {
+        abort(404);
+    }
+
     return redirect('/');
 })->middleware('check.auth');
 

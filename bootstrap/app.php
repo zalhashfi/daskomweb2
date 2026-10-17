@@ -1,8 +1,12 @@
 <?php
 
+use App\Exceptions\RenderApiException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Throwable as ThrowableContract;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -38,5 +42,49 @@ return Application::configure(basePath: dirname(__DIR__))
         //
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        //
+        $apiExceptions = new RenderApiException;
+
+        $exceptions->shouldRenderJsonWhen(
+            fn (Request $request, ThrowableContract $e): bool => $apiExceptions->isApiRequest($request) || $request->expectsJson()
+        );
+
+        $exceptions->renderable(function (ThrowableContract $e, Request $request) use ($apiExceptions) {
+            return $apiExceptions->render($e, $request);
+        });
+
+        $exceptions->report(function (ThrowableContract $e) use ($apiExceptions) {
+            $request = request();
+
+            if (! $apiExceptions->isApiRequest($request)) {
+                return null;
+            }
+
+            $apiExceptions->report($e, $request);
+
+            return false;
+        })->stop();
+
+        $exceptions->respond(function ($response, ThrowableContract $e, Request $request) use ($apiExceptions) {
+            if (! $response instanceof Response) {
+                return $response;
+            }
+
+            $apiExceptions->prepareRequest($request);
+
+            if (! $apiExceptions->isApiRequest($request)) {
+                return $response;
+            }
+
+            if ($response->getStatusCode() < 500) {
+                return $response->headers->has('X-Error-Id')
+                    ? $response
+                    : tap($response, fn (Response $response) => $response->headers->set('X-Error-Id', $apiExceptions->errorIdFor($e)));
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'code' => RenderApiException::CODE_INTERNAL,
+                'error_id' => $apiExceptions->errorIdFor($e),
+            ], 500);
+        });
     })->create();

@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\API;
 
-use App\Exceptions\JawabanSubmissionLockedException;
 use App\Http\Controllers\Controller;
 use App\Models\JawabanMandiri;
 use App\Models\JawabanSubmission;
@@ -31,56 +30,39 @@ class JawabanTMController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        try {
-            $entries = $this->validatedEntries($request);
+        $entries = $this->validatedEntries($request);
 
-            if ($entries->isEmpty()) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Tidak ada jawaban yang dikirimkan.',
-                ], 422);
-            }
-
-            if ($entries->pluck('praktikan_id')->unique()->count() > 1 || $entries->pluck('modul_id')->unique()->count() > 1) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Setiap permintaan hanya boleh memuat satu praktikan dan satu modul.',
-                ], 422);
-            }
-
-            $first = $entries->first();
-
-            $submission = $this->submissionWriter->write(
-                JawabanSubmission::TIPE_TM,
-                (int) $first['praktikan_id'],
-                (int) $first['modul_id'],
-                $entries->map(fn (array $entry): array => [
-                    'soal_id' => $entry['soal_id'],
-                    'jawaban' => $entry['jawaban'],
-                ])->all(),
-            );
-
-            return response()->json([
-                'status' => 'success',
-                'submission_id' => $submission->id,
-                'attempt_no' => $submission->attempt_no,
-            ], 201);
-        } catch (JawabanSubmissionLockedException $e) {
+        if ($entries->isEmpty()) {
             return response()->json([
                 'status' => 'error',
-                'code' => 'SUBMISSION_LOCKED',
-                'submission_id' => $e->submissionId,
-                'locked_at' => $e->lockedAt->toIso8601String(),
-            ], 409);
-        } catch (ValidationException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Terjadi kesalahan saat menyimpan jawaban.',
-                'error' => $e->getMessage(),
-            ], 500);
+                'message' => 'Tidak ada jawaban yang dikirimkan.',
+            ], 422);
         }
+
+        if ($entries->pluck('praktikan_id')->unique()->count() > 1 || $entries->pluck('modul_id')->unique()->count() > 1) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Setiap permintaan hanya boleh memuat satu praktikan dan satu modul.',
+            ], 422);
+        }
+
+        $first = $entries->first();
+
+        $submission = $this->submissionWriter->write(
+            JawabanSubmission::TIPE_TM,
+            (int) $first['praktikan_id'],
+            (int) $first['modul_id'],
+            $entries->map(fn (array $entry): array => [
+                'soal_id' => $entry['soal_id'],
+                'jawaban' => $entry['jawaban'],
+            ])->all(),
+        );
+
+        return response()->json([
+            'status' => 'success',
+            'submission_id' => $submission->id,
+            'attempt_no' => $submission->attempt_no,
+        ], 201);
     }
 
     /**
@@ -125,77 +107,59 @@ class JawabanTMController extends Controller
      */
     public function show(int $idModul): JsonResponse
     {
-        try {
-            $praktikan = auth('praktikan')->user();
+        $praktikan = auth('praktikan')->user();
 
-            if (! $praktikan) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Unauthorized.',
-                ], 401);
-            }
-
-            $modul = Modul::findOrFail($idModul);
-
-            if (! $modul->isQuestionTypeUnlocked('tm')) {
-                return response()->json([
-                    'status' => 'success',
-                    'message' => 'Jawaban masih terkunci.',
-                ], 403);
-            }
-
-            $jawaban = JawabanMandiri::where('praktikan_id', $praktikan->id)
-                ->where('modul_id', $idModul)
-                ->get();
-            if ($jawaban->isEmpty()) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Jawaban tidak ditemukan untuk modul ini.',
-                ], 404);
-            }
-
-            return response()->json([
-                'status' => 'success',
-                'jawaban_mandiri' => $jawaban,
-            ], 200);
-        } catch (\Exception $e) {
+        if (! $praktikan) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Terjadi kesalahan saat mengambil jawaban.',
-                'error' => $e->getMessage(),
-            ], 500);
+                'message' => 'Unauthorized.',
+            ], 401);
         }
+
+        $modul = Modul::findOrFail($idModul);
+
+        if (! $modul->isQuestionTypeUnlocked('tm')) {
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Jawaban masih terkunci.',
+            ], 403);
+        }
+
+        $jawaban = JawabanMandiri::where('praktikan_id', $praktikan->id)
+            ->where('modul_id', $idModul)
+            ->get();
+        if ($jawaban->isEmpty()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Jawaban tidak ditemukan untuk modul ini.',
+            ], 404);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'jawaban_mandiri' => $jawaban,
+        ], 200);
     }
 
     public function showAsisten(int $praktikanId, int $modulId): JsonResponse
     {
-        try {
-            $jawaban = JawabanMandiri::with('soal_mandiri')
-                ->where('praktikan_id', $praktikanId)
-                ->where('modul_id', $modulId)
-                ->get()
-                ->map(function (JawabanMandiri $item) {
-                    return [
-                        'soal_id' => $item->soal_id,
-                        'soal_text' => $item->soal_mandiri?->soal,
-                        'jawaban' => $item->jawaban,
-                    ];
-                })
-                ->values();
+        $jawaban = JawabanMandiri::with('soal_mandiri')
+            ->where('praktikan_id', $praktikanId)
+            ->where('modul_id', $modulId)
+            ->get()
+            ->map(function (JawabanMandiri $item) {
+                return [
+                    'soal_id' => $item->soal_id,
+                    'soal_text' => $item->soal_mandiri?->soal,
+                    'jawaban' => $item->jawaban,
+                ];
+            })
+            ->values();
 
-            return response()->json([
-                'success' => true,
-                'jawaban_mandiri' => $jawaban,
-            ]);
-        } catch (\Throwable $e) {
-            report($e);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Terjadi kesalahan saat mengambil jawaban.',
-                'error' => $e->getMessage(),
-            ], 500);
-        }
+        return response()->json([
+            'success' => true,
+            'jawaban_mandiri' => $jawaban,
+        ]);
     }
 
     /**
