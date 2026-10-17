@@ -10,6 +10,7 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * Class SoalTp
@@ -19,6 +20,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property string $soal
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
  * @property Modul $modul
  * @property Collection|JawabanTp[] $jawaban_tps
  * @property Collection|TempJawabantp[] $temp_jawabantps
@@ -26,6 +28,7 @@ use Illuminate\Database\Eloquent\Model;
 class SoalTp extends Model
 {
     use HasFactory;
+    use SoftDeletes;
 
     protected $table = 'soal_tps';
 
