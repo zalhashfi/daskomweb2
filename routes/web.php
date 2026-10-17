@@ -292,6 +292,14 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
         ->name('modul.documents.store')
         ->middleware(['auth:asisten', 'permission:manage-modul-documents']);
 
+    Route::post('/modul-documents/{id}/approve', [ModulDocumentController::class, 'approve'])
+        ->name('modul.documents.approve')
+        ->middleware(['auth:asisten', 'permission:approve-modul-documents']);
+
+    Route::post('/modul-documents/{id}/reject', [ModulDocumentController::class, 'reject'])
+        ->name('modul.documents.reject')
+        ->middleware(['auth:asisten', 'permission:approve-modul-documents']);
+
     Route::get('/anomalies/attendance', [AnomalyController::class, 'attendance'])
         ->name('anomalies.attendance')
         ->middleware(['auth:asisten', 'permission:manage-praktikum|see-praktikum']);
