@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property Carbon|null $locked_at
  * @property string|null $locked_by_type
  * @property int|null $locked_by_id
+ * @property Carbon|null $finalized_at
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property Praktikan $praktikan
@@ -51,6 +52,7 @@ class JawabanSubmission extends Model
         'locked_at',
         'locked_by_type',
         'locked_by_id',
+        'finalized_at',
     ];
 
     /**
@@ -65,6 +67,7 @@ class JawabanSubmission extends Model
             'jawaban_id' => 'integer',
             'locked_at' => 'datetime',
             'locked_by_id' => 'integer',
+            'finalized_at' => 'datetime',
         ];
     }
 
