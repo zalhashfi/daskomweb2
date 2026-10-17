@@ -6,6 +6,8 @@ use App\Exceptions\DuplicateSoalException;
 use App\Exceptions\JawabanSubmissionLockedException;
 use App\Models\JawabanSubmission;
 use App\Models\Praktikan;
+use App\Models\SoalVersionSet;
+use App\Services\Ai\EvaluationChokepoint;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -21,10 +23,17 @@ use InvalidArgumentException;
  * submission yet). If a concurrent request still wins the unique
  * (praktikan_id, modul_id, tipe, attempt_no) index, the write is retried
  * exactly once with the next attempt number.
+ *
+ * The attempt is also the T23a chokepoint: it stores the modul's ACTIVE
+ * version set on the submission, then asks
+ * App\Services\Ai\EvaluationChokepoint to create the canonical
+ * `ai_evaluations` rows for those answers. No other code path inserts there.
  */
 class SubmissionWriter
 {
     public const MAX_CREATE_ATTEMPTS = 2;
+
+    public function __construct(private readonly EvaluationChokepoint $evaluations) {}
 
 
     /**
@@ -85,9 +94,11 @@ class SubmissionWriter
             'modul_id' => $modulId,
             'tipe' => $tipe,
             'attempt_no' => $attemptNo,
+            'version_set_id' => $this->activeVersionSetId($modulId),
         ]);
 
         $firstAnswerId = null;
+        $answerIds = [];
 
         foreach ($answers as $answer) {
             $row = $modelClass::create([
@@ -99,11 +110,32 @@ class SubmissionWriter
             ]);
 
             $firstAnswerId ??= $row->getKey();
+            $answerIds[] = (int) $row->getKey();
         }
 
         $submission->forceFill(['jawaban_id' => $firstAnswerId])->save();
 
+        // Chokepoint (T23a): rows are created inside this transaction so a
+        // rollback leaves neither answers nor evaluations behind.
+        $this->evaluations->createQueuedEvaluations($submission, $answerIds);
+
         return $submission;
+    }
+
+    /**
+     * The version set currently in force for the modul: activated_at not null,
+     * newest first. Null when the modul has no active set yet.
+     */
+    protected function activeVersionSetId(int $modulId): ?int
+    {
+        $id = SoalVersionSet::query()
+            ->forModul($modulId)
+            ->active()
+            ->orderByDesc('activated_at')
+            ->orderByDesc('id')
+            ->value('id');
+
+        return $id === null ? null : (int) $id;
     }
 
     /**

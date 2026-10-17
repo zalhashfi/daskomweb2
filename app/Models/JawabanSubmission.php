@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $modul_id
  * @property string $tipe
  * @property int $attempt_no
+ * @property int|null $version_set_id
  * @property int|null $jawaban_id
  * @property Carbon|null $locked_at
  * @property string|null $locked_by_type
@@ -24,6 +25,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property Carbon|null $updated_at
  * @property Praktikan $praktikan
  * @property Modul $modul
+ * @property SoalVersionSet|null $versionSet
  */
 class JawabanSubmission extends Model
 {
@@ -48,6 +50,7 @@ class JawabanSubmission extends Model
         'modul_id',
         'tipe',
         'attempt_no',
+        'version_set_id',
         'jawaban_id',
         'locked_at',
         'locked_by_type',
@@ -64,6 +67,7 @@ class JawabanSubmission extends Model
             'praktikan_id' => 'integer',
             'modul_id' => 'integer',
             'attempt_no' => 'integer',
+            'version_set_id' => 'integer',
             'jawaban_id' => 'integer',
             'locked_at' => 'datetime',
             'locked_by_id' => 'integer',
@@ -79,6 +83,15 @@ class JawabanSubmission extends Model
     public function modul(): BelongsTo
     {
         return $this->belongsTo(Modul::class, 'modul_id');
+    }
+
+    /**
+     * The question version set that was in force when this attempt was
+     * written (null when the modul had no active set at submit time).
+     */
+    public function versionSet(): BelongsTo
+    {
+        return $this->belongsTo(SoalVersionSet::class, 'version_set_id');
     }
 
     /**

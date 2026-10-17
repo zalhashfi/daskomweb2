@@ -363,7 +363,7 @@ class JawabanSubmissionTest extends TestCase
 
     private function fakeWriter(): SubmissionWriter
     {
-        return new class extends SubmissionWriter
+        return new class(app(\App\Services\Ai\EvaluationChokepoint::class)) extends SubmissionWriter
         {
             public int $losingWrites = 0;
 

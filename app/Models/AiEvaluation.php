@@ -10,11 +10,17 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  *
  * One row per (jawaban_id, answer_hash, version_set_id, ai_config_id); the
  * unique index makes re-running an evaluation a no-op at persistence level.
- * Rows are only created by the JawabanSubmissionWriter chokepoint — jobs,
- * retries and regrade flows update this row and append to attempts() instead.
+ * Rows are only created by the JawabanSubmissionWriter chokepoint
+ * (App\Services\Ai\EvaluationChokepoint) — jobs, retries and regrade flows
+ * update this row and append to attempts() instead.
  */
 class AiEvaluation extends Model
 {
+    /**
+     * Written by the chokepoint; the job picks it up from here.
+     */
+    public const STATUS_QUEUED = 'queued';
+
     public const STATUS_PENDING = 'pending';
 
     public const STATUS_PROCESSING = 'processing';
