@@ -19,6 +19,7 @@ use App\Http\Controllers\API\KelasController;
 use App\Http\Controllers\API\LaporanPraktikanController;
 use App\Http\Controllers\API\LeaderBoardController;
 use App\Http\Controllers\API\ModulController;
+use App\Http\Controllers\API\ModulDocumentController;
 use App\Http\Controllers\API\NilaiController;
 use App\Http\Controllers\API\PollingsController;
 use App\Http\Controllers\API\PraktikanController;
@@ -286,6 +287,10 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     Route::post('/modul/{id}/reset', [ModulController::class, 'reset'])
         ->name('modul.reset.by-id')
         ->middleware(['auth:asisten', 'can:manage-modul']);
+
+    Route::post('/modul/{id}/documents', [ModulDocumentController::class, 'store'])
+        ->name('modul.documents.store')
+        ->middleware(['auth:asisten', 'permission:manage-modul-documents']);
 
     Route::get('/anomalies/attendance', [AnomalyController::class, 'attendance'])
         ->name('anomalies.attendance')
