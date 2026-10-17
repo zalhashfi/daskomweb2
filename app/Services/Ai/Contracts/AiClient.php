@@ -7,10 +7,9 @@ use App\Exceptions\AiUnavailableException;
 /**
  * Minimal outbound contract to an AI provider (spec §7.8).
  *
- * The body is deliberately left unimplemented here: T20c owns the
- * `openai_compatible` driver and may adjust the shapes below while keeping
- * `chat()` returning the assistant text and `embed()` returning one vector
- * per input text.
+ * `chat()` returns the assistant text, `embed()` one vector per input text.
+ * The `openai_compatible` driver (OpenAiCompatibleClient) is the only
+ * implementation in v1.
  */
 interface AiClient
 {

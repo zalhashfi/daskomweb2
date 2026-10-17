@@ -13,9 +13,9 @@ use App\Services\Ai\Contracts\AiClient;
  * active AiConfig row. `forChat()` reads only `driver`, `forEmbed()` only
  * `embed_driver`, so the two resolutions stay independent.
  *
- * v1 knows exactly one driver (`openai_compatible` → 9router). Every other
- * value — notably the retired `ollama` — fails loudly; there is no fallback
- * provider (spec Q22a/Q30).
+ * v1 knows exactly one driver: `openai_compatible`, an OpenAI-shaped
+ * gateway. Every other value — notably the retired `ollama` — fails loudly;
+ * there is no fallback provider (spec Q22a/Q30).
  */
 class AiClientManager
 {
@@ -47,7 +47,7 @@ class AiClientManager
     private function make(?string $driver, string $column): AiClient
     {
         return match ($driver) {
-            self::DRIVER_OPENAI_COMPATIBLE => new OpenAiCompatibleClient,
+            self::DRIVER_OPENAI_COMPATIBLE => OpenAiCompatibleClient::fromConfig(),
             default => throw UnknownDriverException::make($column, $driver),
         };
     }

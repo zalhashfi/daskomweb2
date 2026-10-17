@@ -205,19 +205,27 @@ class AiClientManagerTest extends TestCase
         $this->assertStringContainsString('"model":"x"', $made->getMessage());
     }
 
-    public function test_placeholder_client_reports_not_implemented(): void
+    public function test_client_is_built_from_ai_config_and_requires_credentials_at_call_time(): void
     {
+        $client = app(AiClientManager::class)->forChat($this->config());
+
+        $this->assertInstanceOf(OpenAiCompatibleClient::class, $client);
+        $this->assertSame(config('ai.openai_compatible.base_url'), $client->baseUrl);
+
+        config([
+            'ai.openai_compatible.base_url' => 'https://gateway.test',
+            'ai.openai_compatible.chat_model' => 'provider/model',
+            'ai.openai_compatible.embed_model' => 'provider/embed',
+            'ai.openai_compatible.api_key' => null,
+        ]);
+
         $client = app(AiClientManager::class)->forChat($this->config());
 
         try {
             $client->chat([['role' => 'user', 'content' => 'halo']]);
-            $this->fail('Placeholder client seharusnya melempar AiUnavailableException.');
+            $this->fail('Client tanpa api_key seharusnya melempar AiUnavailableException.');
         } catch (AiUnavailableException $e) {
-            $this->assertSame(AiUnavailableException::CODE_DRIVER_NOT_IMPLEMENTED, $e->errorCode());
+            $this->assertSame(AiUnavailableException::CODE_PROVIDER_NOT_CONFIGURED, $e->errorCode());
         }
-
-        $this->expectException(AiUnavailableException::class);
-
-        $client->embed(['halo']);
     }
 }
