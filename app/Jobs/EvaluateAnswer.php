@@ -11,6 +11,7 @@ use App\Models\JawabanTp;
 use App\Models\SoalVersionItem;
 use App\Services\Ai\AiClientManager;
 use App\Services\Ai\AiGate;
+use App\Services\Ai\ModuleQueueGuard;
 use App\Services\Ai\PromptBuilder;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -30,10 +31,11 @@ use Throwable;
  * Every abort path is decided before a provider call, in this order:
  *
  *  1. row already terminal          → no-op
- *  2. AiGate + payload policy       → failed/<errorCode>, 0 request
- *  3. kunci missing / not approved  → key_pending, 0 request
- *  4. empty answer ('', '-')        → done / tidak_menjawab, 0 request
- *  5. token estimate over budget    → failed/CONTEXT_OVERFLOW, 0 request
+ *  2. another modul is ahead (FIFO) → release(), row unchanged, 0 request
+ *  3. AiGate + payload policy       → failed/<errorCode>, 0 request
+ *  4. kunci missing / not approved  → key_pending, 0 request
+ *  5. empty answer ('', '-')        → done / tidak_menjawab, 0 request
+ *  6. token estimate over budget    → failed/CONTEXT_OVERFLOW, 0 request
  *
  * Only the happy path reaches the provider; each call is recorded in
  * `ai_evaluation_attempts` and its model is compared with `chat_model` so a
@@ -109,11 +111,19 @@ class EvaluateAnswer implements ShouldQueue
 
     public function __construct(public AiEvaluation $evaluation) {}
 
-    public function handle(AiClientManager $manager, AiGate $gate, PromptBuilder $promptBuilder): void
-    {
+    public function handle(
+        AiClientManager $manager,
+        AiGate $gate,
+        PromptBuilder $promptBuilder,
+        ?ModuleQueueGuard $queueGuard = null,
+    ): void {
         $evaluation = AiEvaluation::query()->find($this->evaluation->getKey());
 
         if ($evaluation === null || $evaluation->isTerminal()) {
+            return;
+        }
+
+        if ($queueGuard !== null && $this->shouldDeferToOtherModul($evaluation, $queueGuard)) {
             return;
         }
 
@@ -124,6 +134,40 @@ class EvaluateAnswer implements ShouldQueue
         } catch (Throwable $exception) {
             $this->fail($evaluation, $exception);
         }
+    }
+
+    /**
+     * FIFO across modules (T22d): while another modul is older in the queue,
+     * this job goes back onto the queue with a delay. The row keeps its
+     * non-terminal status and no provider request is made here.
+     *
+     * Evaluations whose modul cannot be resolved are not held back — the
+     * guard only orders work it can attribute.
+     */
+    private function shouldDeferToOtherModul(AiEvaluation $evaluation, ModuleQueueGuard $queueGuard): bool
+    {
+        $modulId = $this->modulIdOf($evaluation);
+
+        if ($modulId === null || ! $queueGuard->shouldYield($modulId)) {
+            return false;
+        }
+
+        Log::info('ai.evaluation_yielded_to_queue', [
+            'ai_evaluation_id' => $evaluation->getKey(),
+            'modul_id' => $modulId,
+            'active_modul_id' => $queueGuard->activeModulId(),
+        ]);
+
+        $this->release(ModuleQueueGuard::RELEASE_DELAY_SECONDS);
+
+        return true;
+    }
+
+    private function modulIdOf(AiEvaluation $evaluation): ?int
+    {
+        $modulId = $this->answerRow($evaluation)?->modul_id;
+
+        return $modulId === null ? null : (int) $modulId;
     }
 
     /**
