@@ -147,8 +147,9 @@ class AiPreflightDuplicatesTest extends TestCase
     {
         $table = $key === 'tp' ? 'jawaban_tps' : 'jawaban_mandiris';
 
-        // jawaban_tps.submission_id is NOT NULL and unique per (submission_id,
-        // soal_id), so every requested answer row gets its own tp submission.
+        // jawaban_tps/jawaban_mandiris .submission_id is NOT NULL and unique
+        // per (submission_id, soal_id), so every requested answer row gets its
+        // own submission of the matching tipe.
         $attributes = [
             'praktikan_id' => $praktikanId,
             'modul_id' => $modulId,
@@ -158,27 +159,27 @@ class AiPreflightDuplicatesTest extends TestCase
             'updated_at' => now(),
         ];
 
-        if ($key === 'tp') {
-            $attributes['submission_id'] = $this->makeTpSubmission($praktikanId, $modulId)->id;
-        }
+        $attributes['submission_id'] = $this->makeSubmission($praktikanId, $modulId, $key)->id;
 
         return (int) DB::table($table)->insertGetId($attributes);
     }
 
-    private function makeTpSubmission(int $praktikanId, int $modulId): JawabanSubmission
+    private function makeSubmission(int $praktikanId, int $modulId, string $key): JawabanSubmission
     {
         // (praktikan_id, modul_id, tipe, attempt_no) is unique, so every extra
         // answer in the same slot becomes the next attempt.
+        $tipe = $key === 'tp' ? JawabanSubmission::TIPE_TP : JawabanSubmission::TIPE_TM;
+
         $nextAttempt = (int) DB::table('jawaban_submissions')
             ->where('praktikan_id', $praktikanId)
             ->where('modul_id', $modulId)
-            ->where('tipe', JawabanSubmission::TIPE_TP)
+            ->where('tipe', $tipe)
             ->max('attempt_no') + 1;
 
         return JawabanSubmission::create([
             'praktikan_id' => $praktikanId,
             'modul_id' => $modulId,
-            'tipe' => JawabanSubmission::TIPE_TP,
+            'tipe' => $tipe,
             'attempt_no' => $nextAttempt,
         ])->fresh();
     }

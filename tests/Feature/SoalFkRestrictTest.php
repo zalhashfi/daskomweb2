@@ -204,10 +204,20 @@ class SoalFkRestrictTest extends TestCase
 
     private function createJawabanMandiri(SoalMandiri $soal, Modul $modul): JawabanMandiri
     {
+        $praktikanId = Praktikan::factory()->create()->id;
+
+        // jawaban_mandiris.submission_id is NOT NULL (FK to jawaban_submissions).
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikanId,
+            'modul_id' => $modul->id,
+            'tipe' => JawabanSubmission::TIPE_TM,
+        ]);
+
         return JawabanMandiri::create([
-            'praktikan_id' => Praktikan::factory()->create()->id,
+            'praktikan_id' => $praktikanId,
             'soal_id' => $soal->id,
             'modul_id' => $modul->id,
+            'submission_id' => $submission->id,
             'jawaban' => 'Jawaban praktikan untuk soal mandiri.',
         ]);
     }

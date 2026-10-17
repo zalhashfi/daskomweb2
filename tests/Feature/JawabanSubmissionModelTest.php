@@ -177,9 +177,19 @@ class JawabanSubmissionModelTest extends TestCase
     {
         $praktikan = Praktikan::factory()->create();
         $modul = Modul::factory()->create();
-        $jawabanMandiri = JawabanMandiri::create([
+        $soalId = $this->createSoalMandiriId($modul);
+
+        // jawaban_mandiris.submission_id is NOT NULL (FK to jawaban_submissions).
+        $tmSubmission = JawabanSubmission::create([
             'praktikan_id' => $praktikan->id,
-            'soal_id' => $this->createSoalMandiriId($modul),
+            'modul_id' => $modul->id,
+            'tipe' => JawabanSubmission::TIPE_TM,
+        ]);
+
+        $jawabanMandiri = JawabanMandiri::create([
+            'submission_id' => $tmSubmission->id,
+            'praktikan_id' => $praktikan->id,
+            'soal_id' => $soalId,
             'modul_id' => $modul->id,
             'jawaban' => 'Jawaban mandiri.',
         ]);
@@ -188,6 +198,7 @@ class JawabanSubmissionModelTest extends TestCase
             'praktikan_id' => $praktikan->id,
             'modul_id' => $modul->id,
             'tipe' => JawabanSubmission::TIPE_TM,
+            'attempt_no' => 2,
             'jawaban_id' => $jawabanMandiri->id,
         ]);
 
@@ -251,10 +262,11 @@ class JawabanSubmissionModelTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('jawaban_submissions'));
 
-        // jawaban_tps.submission_id references this table with a CASCADE
-        // foreign key, so the migration under test runs its down() first to
-        // drop that reference, exactly like a real `migrate:rollback` batch.
-        $this->runSubmissionsReferenceMigration('down');
+        // jawaban_tps.submission_id and jawaban_mandiris.submission_id
+        // reference this table with CASCADE foreign keys, so their owning
+        // migrations run down() first to drop those references, exactly like a
+        // real `migrate:rollback` batch.
+        $this->runSubmissionsReferenceMigrations('down');
 
         $this->runMigration('down');
 
@@ -263,7 +275,7 @@ class JawabanSubmissionModelTest extends TestCase
         $this->assertTrue(Schema::hasTable('moduls'), 'down() tidak boleh menyentuh tabel lain.');
 
         $this->runMigration('up');
-        $this->runSubmissionsReferenceMigration('up');
+        $this->runSubmissionsReferenceMigrations('up');
 
         $this->assertTrue(Schema::hasTable('jawaban_submissions'), 'up() harus membuat ulang tabel.');
         foreach (['praktikan_id', 'modul_id', 'tipe', 'attempt_no', 'jawaban_id', 'locked_at', 'locked_by_type', 'locked_by_id'] as $column) {
@@ -287,17 +299,34 @@ class JawabanSubmissionModelTest extends TestCase
             ),
             'FK jawaban_tps.submission_id harus kembali setelah up().'
         );
+        $this->assertContains(
+            'jawaban_mandiris_submission_id_foreign',
+            array_map(
+                fn (object $row): string => $row->CONSTRAINT_NAME,
+                DB::select(
+                    'SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME = ?',
+                    ['jawaban_mandiris', 'jawaban_submissions']
+                )
+            ),
+            'FK jawaban_mandiris.submission_id harus kembali setelah up().'
+        );
     }
 
     /**
-     * Re-drive 2026_10_17_150000_add_submission_id_to_jawaban_tps_table, which
-     * owns the foreign key that keeps jawaban_submissions from being dropped.
+     * Re-drive 2026_10_17_150000 (jawaban_tps) and 2026_10_17_170000
+     * (jawaban_mandiris), which own the foreign keys that keep
+     * jawaban_submissions from being dropped.
      */
-    private function runSubmissionsReferenceMigration(string $direction): void
+    private function runSubmissionsReferenceMigrations(string $direction): void
     {
-        $migration = require database_path('migrations/2026_10_17_150000_add_submission_id_to_jawaban_tps_table.php');
+        foreach ([
+            '2026_10_17_150000_add_submission_id_to_jawaban_tps_table.php',
+            '2026_10_17_170000_add_submission_id_to_jawaban_mandiris_table.php',
+        ] as $file) {
+            $migration = require database_path('migrations/'.$file);
 
-        $migration->{$direction}();
+            $migration->{$direction}();
+        }
     }
 
     private function isMySqlFamily(): bool

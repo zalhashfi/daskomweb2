@@ -6,6 +6,7 @@ use App\Models\Asisten;
 use App\Models\JawabanFitb;
 use App\Models\JawabanJurnal;
 use App\Models\JawabanMandiri;
+use App\Models\JawabanSubmission;
 use App\Models\JawabanTa;
 use App\Models\JawabanTk;
 use App\Models\Kelas;
@@ -166,7 +167,15 @@ class AssistantAnswerEndpointsTest extends TestCase
                 'soal' => 'Jelaskan prosedur keselamatan kerja di laboratorium.',
             ]);
 
+        // jawaban_mandiris.submission_id is NOT NULL (FK to jawaban_submissions).
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikan->id,
+            'modul_id' => $modul->id,
+            'tipe' => JawabanSubmission::TIPE_TM,
+        ]);
+
         JawabanMandiri::create([
+            'submission_id' => $submission->id,
             'praktikan_id' => $praktikan->id,
             'modul_id' => $modul->id,
             'soal_id' => $soal->id,

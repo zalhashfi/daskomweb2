@@ -262,9 +262,10 @@ class DuplicateAnswersMigrationTest extends TestCase
 
     private function insertJawaban(string $key, int $praktikanId, int $modulId, int $soalId, string $createdAt): int
     {
-        // jawaban_tps.submission_id is NOT NULL and unique per (submission_id,
-        // soal_id): identical answers on the same soal are two attempts, so
-        // each duplicate row is attached to its own tp submission.
+        // jawaban_tps/jawaban_mandiris .submission_id is NOT NULL and unique
+        // per (submission_id, soal_id): identical answers on the same soal are
+        // two attempts, so each duplicate row is attached to its own
+        // submission of the matching tipe.
         $attributes = [
             'praktikan_id' => $praktikanId,
             'modul_id' => $modulId,
@@ -274,27 +275,27 @@ class DuplicateAnswersMigrationTest extends TestCase
             'updated_at' => $createdAt,
         ];
 
-        if ($key === 'tp') {
-            $attributes['submission_id'] = $this->makeTpSubmission($praktikanId, $modulId)->id;
-        }
+        $attributes['submission_id'] = $this->makeSubmission($praktikanId, $modulId, $key)->id;
 
         return (int) DB::table($this->tables[$key]['source'])->insertGetId($attributes);
     }
 
-    private function makeTpSubmission(int $praktikanId, int $modulId): JawabanSubmission
+    private function makeSubmission(int $praktikanId, int $modulId, string $key): JawabanSubmission
     {
         // (praktikan_id, modul_id, tipe, attempt_no) is unique, so every extra
         // answer in the same slot becomes the next attempt.
+        $tipe = $this->tables[$key]['tipe'];
+
         $nextAttempt = (int) DB::table('jawaban_submissions')
             ->where('praktikan_id', $praktikanId)
             ->where('modul_id', $modulId)
-            ->where('tipe', JawabanSubmission::TIPE_TP)
+            ->where('tipe', $tipe)
             ->max('attempt_no') + 1;
 
         return JawabanSubmission::create([
             'praktikan_id' => $praktikanId,
             'modul_id' => $modulId,
-            'tipe' => JawabanSubmission::TIPE_TP,
+            'tipe' => $tipe,
             'attempt_no' => $nextAttempt,
         ])->fresh();
     }

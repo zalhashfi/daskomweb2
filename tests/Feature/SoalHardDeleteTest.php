@@ -140,10 +140,18 @@ class SoalHardDeleteTest extends TestCase
         $kelas = Kelas::factory()->create();
         $praktikan = Praktikan::factory()->create(['kelas_id' => $kelas->id]);
 
+        // jawaban_mandiris.submission_id is NOT NULL (FK to jawaban_submissions).
+        $submission = JawabanSubmission::create([
+            'praktikan_id' => $praktikan->id,
+            'modul_id' => $soal->modul_id,
+            'tipe' => JawabanSubmission::TIPE_TM,
+        ]);
+
         return JawabanMandiri::create([
             'praktikan_id' => $praktikan->id,
             'soal_id' => $soal->id,
             'modul_id' => $soal->modul_id,
+            'submission_id' => $submission->id,
             'jawaban' => 'Jawaban praktikan untuk soal TM.',
         ]);
     }
