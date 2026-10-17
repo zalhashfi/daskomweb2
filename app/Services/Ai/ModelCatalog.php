@@ -1,0 +1,203 @@
+<?php
+
+namespace App\Services\Ai;
+
+use App\Exceptions\AiUnavailableException;
+use App\Exceptions\ModelCatalogException;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+
+/**
+ * Read-only view of the provider model catalogue (`GET /v1/models`, spec
+ * §5.4.0a). It is the only discovery endpoint ever called: `/v1/models/info`
+ * and friends are never used.
+ *
+ * The catalogue is cached for 24 hours, so repeated validations inside the
+ * TTL never reach the provider again.
+ *
+ * Embedding dimensions are deliberately absent: the provider does not expose
+ * them consistently, so the configured `ai.embed_profiles.*.dimension` is the
+ * only source (verified lazily against the first returned vector length).
+ */
+class ModelCatalog
+{
+    public const CACHE_TTL_HOURS = 24;
+
+    public const CACHE_KEY = 'ai:model_catalog';
+
+    /**
+     * @param  string|null  $baseUrl  Gateway root, e.g. `https://router.local`.
+     * @param  string|null  $apiKey  Bearer token; never logged.
+     * @param  int  $timeout  Request timeout in seconds.
+     */
+    public function __construct(
+        public readonly ?string $baseUrl = null,
+        public readonly ?string $apiKey = null,
+        public readonly int $timeout = 90,
+    ) {}
+
+    /**
+     * Build the catalogue from `config('ai.openai_compatible.*')`.
+     */
+    public static function fromConfig(): self
+    {
+        $config = config('ai.openai_compatible', []);
+
+        return new self(
+            baseUrl: $config['base_url'] ?? null,
+            apiKey: $config['api_key'] ?? null,
+            timeout: (int) ($config['timeout'] ?? 90),
+        );
+    }
+
+    /**
+     * Assert the id exists in the catalogue and is not a Combo.
+     *
+     * @throws ModelCatalogException MODEL_NOT_FOUND / COMBO_NOT_ALLOWED
+     * @throws AiUnavailableException when the catalogue itself is unreachable
+     */
+    public function assertChatModel(string $id): void
+    {
+        $models = $this->catalog();
+
+        $entry = $models[$id] ?? null;
+
+        if ($entry === null) {
+            throw ModelCatalogException::modelNotFound($id);
+        }
+
+        if ($entry['owned_by'] === 'combo') {
+            throw ModelCatalogException::comboNotAllowed($id);
+        }
+    }
+
+    /**
+     * The catalogue as `id => ['id' => ..., 'owned_by' => ...]`, cached for 24h.
+     *
+     * @return array<string, array{id: string, owned_by: string|null}>
+     *
+     * @throws AiUnavailableException
+     */
+    public function catalog(): array
+    {
+        return Cache::remember(self::CACHE_KEY, now()->addHours(self::CACHE_TTL_HOURS), fn (): array => $this->fetch());
+    }
+
+    /**
+     * Force a fresh read from the provider, replacing the cached catalogue.
+     *
+     * @return array<string, array{id: string, owned_by: string|null}>
+     *
+     * @throws AiUnavailableException
+     */
+    public function refresh(): array
+    {
+        Cache::forget(self::CACHE_KEY);
+
+        return $this->catalog();
+    }
+
+    /**
+     * @return array<string, array{id: string, owned_by: string|null}>
+     *
+     * @throws AiUnavailableException
+     */
+    private function fetch(): array
+    {
+        $this->assertConfigured();
+
+        try {
+            $response = Http::acceptJson()
+                ->withToken((string) $this->apiKey)
+                ->timeout($this->timeout)
+                ->connectTimeout(min($this->timeout, 10))
+                ->get(rtrim((string) $this->baseUrl, '/').'/v1/models');
+        } catch (ConnectionException $e) {
+            throw new AiUnavailableException(
+                AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
+                'Koneksi ke katalog model provider AI gagal.',
+                null,
+                $e,
+            );
+        }
+
+        if (! $response->successful()) {
+            throw new AiUnavailableException(
+                $this->statusCode($response->status()),
+                'Katalog model provider AI membalas status '.$response->status().'.',
+            );
+        }
+
+        $payload = json_decode($response->body(), true);
+
+        if (! is_array($payload)) {
+            throw new AiUnavailableException(
+                AiUnavailableException::CODE_CONTRACT_VIOLATION,
+                'Body katalog model provider bukan objek JSON.',
+            );
+        }
+
+        return $this->normalize($payload);
+    }
+
+    /**
+     * Accept the OpenAI shape `data[].id` first, then tolerate a bare list or
+     * a `models[]` key; entries without a string `id` are skipped.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, array{id: string, owned_by: string|null}>
+     */
+    private function normalize(array $payload): array
+    {
+        $items = match (true) {
+            is_array($payload['data'] ?? null) => $payload['data'],
+            is_array($payload['models'] ?? null) => $payload['models'],
+            array_is_list($payload) => $payload,
+            default => [],
+        };
+
+        $models = [];
+
+        foreach ($items as $item) {
+            if (! is_array($item) || ! is_string($item['id'] ?? null) || $item['id'] === '') {
+                continue;
+            }
+
+            $ownedBy = $item['owned_by'] ?? null;
+
+            $models[$item['id']] = [
+                'id' => $item['id'],
+                'owned_by' => is_string($ownedBy) ? $ownedBy : null,
+            ];
+        }
+
+        return $models;
+    }
+
+    private function statusCode(int $status): string
+    {
+        return match ($status) {
+            401 => AiUnavailableException::CODE_EXTERNAL_AUTH,
+            403 => AiUnavailableException::CODE_EXTERNAL_FORBIDDEN,
+            429 => AiUnavailableException::CODE_EXTERNAL_RATE_LIMIT,
+            503 => AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
+            default => AiUnavailableException::CODE_EXTERNAL_ERROR,
+        };
+    }
+
+    /**
+     * @throws AiUnavailableException
+     */
+    private function assertConfigured(): void
+    {
+        foreach (['base_url' => $this->baseUrl, 'api_key' => $this->apiKey] as $key => $value) {
+            if (! is_string($value) || trim($value) === '') {
+                throw new AiUnavailableException(
+                    AiUnavailableException::CODE_PROVIDER_NOT_CONFIGURED,
+                    'Konfigurasi provider AI tidak lengkap: ai.openai_compatible.'.$key.'.',
+                );
+            }
+        }
+    }
+}
