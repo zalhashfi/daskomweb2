@@ -128,8 +128,8 @@ class OpenAiCompatibleClientTest extends TestCase
 
         $result = $this->client()->chat($this->messages());
 
-        $this->assertSame(['content' => 'Skor 82.'], $result);
         $this->assertSame('Skor 82.', $result['content']);
+        $this->assertSame(self::CHAT_MODEL, $result['model'], 'Model provider di-echo untuk deteksi drift.');
     }
 
     public function test_chat_request_has_stream_false_accept_json_and_bearer(): void

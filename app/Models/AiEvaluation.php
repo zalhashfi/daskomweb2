@@ -46,7 +46,14 @@ class AiEvaluation extends Model
         'version_set_id',
         'ai_config_id',
         'status',
+        'verdict',
         'ai_score',
+        'confidence',
+        'alasan',
+        'cited_chunk_ids',
+        'error_code',
+        'error_message',
+        'finished_at',
         'max_score',
         'raw_response',
         'driver',
@@ -60,6 +67,7 @@ class AiEvaluation extends Model
     protected $hidden = [
         'ai_score',
         'raw_response',
+        'cited_chunk_ids',
     ];
 
     protected $casts = [
@@ -72,6 +80,9 @@ class AiEvaluation extends Model
         'tokens_in' => 'integer',
         'tokens_out' => 'integer',
         'latency_ms' => 'integer',
+        'confidence' => 'decimal:2',
+        'cited_chunk_ids' => 'array',
+        'finished_at' => 'datetime',
     ];
 
     protected static function booted(): void

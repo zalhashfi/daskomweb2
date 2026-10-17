@@ -16,8 +16,10 @@ interface AiClient
     /**
      * Send a chat completion and return the assistant content.
      *
+     * `model` / `usage` are optional extras echoed by the provider.
+     *
      * @param  list<array{role: string, content: string}>  $messages
-     * @return array{content: string}
+     * @return array{content: string, model?: string, usage?: array<string, mixed>}
      *
      * @throws AiUnavailableException
      */

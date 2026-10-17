@@ -76,8 +76,11 @@ class OpenAiCompatibleClient implements AiClient
     }
 
     /**
+     * `model` and `usage` are echoed from the provider so the caller can
+     * detect model drift (spec E28) and record token counts.
+     *
      * @param  list<array{role: string, content: string}>  $messages
-     * @return array{content: string}
+     * @return array{content: string, model?: string, usage?: array<string, mixed>}
      *
      * @throws AiUnavailableException
      */
@@ -105,7 +108,20 @@ class OpenAiCompatibleClient implements AiClient
             );
         }
 
-        return ['content' => $content];
+        $response = ['content' => $content];
+
+        // Extras for EvaluateAnswer (model drift, token accounting). Only set
+        // when the provider actually sent them, so the plain {content} shape
+        // is untouched for everything else.
+        if (isset($payload['model']) && is_string($payload['model']) && $payload['model'] !== '') {
+            $response['model'] = $payload['model'];
+        }
+
+        if (isset($payload['usage']) && is_array($payload['usage'])) {
+            $response['usage'] = $payload['usage'];
+        }
+
+        return $response;
     }
 
     /**
