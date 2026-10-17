@@ -8,13 +8,13 @@ use App\Http\Controllers\API\ImageKitAuthController;
 use App\Http\Controllers\API\JadwalJagaController;
 use App\Http\Controllers\API\JawabanFITBController;
 use App\Http\Controllers\API\JawabanJurnalController;
+use App\Http\Controllers\API\JawabanStandarController;
 use App\Http\Controllers\API\JawabanTAController;
 use App\Http\Controllers\API\JawabanTKController;
 use App\Http\Controllers\API\JawabanTMController;
 use App\Http\Controllers\API\JawabanTPController;
 use App\Http\Controllers\API\JenisPollingController;
 use App\Http\Controllers\API\KelasController;
-use App\Http\Controllers\HealthController;
 use App\Http\Controllers\API\LaporanPraktikanController;
 use App\Http\Controllers\API\LeaderBoardController;
 use App\Http\Controllers\API\ModulController;
@@ -23,9 +23,9 @@ use App\Http\Controllers\API\PollingsController;
 use App\Http\Controllers\API\PraktikanController;
 use App\Http\Controllers\API\PraktikumController;
 use App\Http\Controllers\API\PraktikumProgressController;
+use App\Http\Controllers\API\QuestionRandomizationController;
 use App\Http\Controllers\API\RoleController;
 use App\Http\Controllers\API\SeeLabsProxyController;
-use App\Http\Controllers\API\QuestionRandomizationController;
 use App\Http\Controllers\API\SoalCommentController;
 use App\Http\Controllers\API\SoalFITBController;
 use App\Http\Controllers\API\SoalJurnalController;
@@ -39,6 +39,7 @@ use App\Http\Controllers\Api\V1\NilaiComplaintController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\Auth\RegisteredAsistenController;
 use App\Http\Controllers\Auth\RegisteredPraktikanController;
+use App\Http\Controllers\HealthController;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -334,6 +335,14 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     Route::post('/modul/{id}/soal-version-sets', [SoalVersionSetController::class, 'createVersion'])
         ->name('create-version-by-modul.soal-version-set')
         ->middleware(['auth:asisten', 'permission:approve-jawaban-standar|manage-soal']);
+
+    // Kunci Jawaban (SPEC 02-01 §7.4, T16): written onto the active version item.
+    Route::put('/soal-tp/{idSoal}/jawaban-standar', [JawabanStandarController::class, 'upsertTp'])
+        ->name('upsert.jawaban-standar.tp')
+        ->middleware(['auth:asisten', 'permission:manage-soal']);
+    Route::put('/soal-tm/{idSoal}/jawaban-standar', [JawabanStandarController::class, 'upsertTm'])
+        ->name('upsert.jawaban-standar.tm')
+        ->middleware(['auth:asisten', 'permission:manage-soal']);
 
     // Soal TP
     Route::get('/soal-tp/{idModul}', [SoalTPController::class, 'show'])->name('show.soaltp')->middleware(['auth:asisten,praktikan', 'permission:see-soal|lihat-modul']);
