@@ -24,6 +24,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property int|null $approved_by_id
  * @property int $bobot_total
  * @property Carbon|null $activated_at
+ * @property string|null $reject_reason
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property-read Modul $modul
@@ -48,6 +49,7 @@ class SoalVersionSet extends Model
         'approved_by_id',
         'bobot_total',
         'activated_at',
+        'reject_reason',
     ];
 
     /**

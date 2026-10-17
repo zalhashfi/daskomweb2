@@ -33,6 +33,7 @@ use App\Http\Controllers\API\SoalTAController;
 use App\Http\Controllers\API\SoalTKController;
 use App\Http\Controllers\API\SoalTMController;
 use App\Http\Controllers\API\SoalTPController;
+use App\Http\Controllers\API\SoalVersionSetController;
 use App\Http\Controllers\API\TugasPendahuluanController;
 use App\Http\Controllers\Api\V1\NilaiComplaintController;
 use App\Http\Controllers\AuditLogController;
@@ -319,6 +320,20 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
 
     // Polling View Count
     Route::get('/polling/{id}', [PollingsController::class, 'show'])->name('show.polling')->middleware(['auth:asisten,praktikan']);
+
+    // Soal Version Sets (SPEC 02-01 §7.4)
+    Route::post('/soal-version-sets/{id}/approve', [SoalVersionSetController::class, 'approve'])
+        ->name('approve.soal-version-set')
+        ->middleware(['auth:asisten', 'permission:approve-jawaban-standar|manage-soal']);
+    Route::post('/soal-version-sets/{id}/reject', [SoalVersionSetController::class, 'reject'])
+        ->name('reject.soal-version-set')
+        ->middleware(['auth:asisten', 'permission:approve-jawaban-standar|manage-soal']);
+    Route::post('/soal-version-sets/{id}/versions', [SoalVersionSetController::class, 'createVersion'])
+        ->name('create-version.soal-version-set')
+        ->middleware(['auth:asisten', 'permission:approve-jawaban-standar|manage-soal']);
+    Route::post('/modul/{id}/soal-version-sets', [SoalVersionSetController::class, 'createVersion'])
+        ->name('create-version-by-modul.soal-version-set')
+        ->middleware(['auth:asisten', 'permission:approve-jawaban-standar|manage-soal']);
 
     // Soal TP
     Route::get('/soal-tp/{idModul}', [SoalTPController::class, 'show'])->name('show.soaltp')->middleware(['auth:asisten,praktikan', 'permission:see-soal|lihat-modul']);
