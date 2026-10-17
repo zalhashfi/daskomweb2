@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use App\Adapter\ImageKitAdapter;
+use App\Models\Nilai;
+use App\Observers\NilaiObserver;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
@@ -25,6 +27,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Nilai::observe(NilaiObserver::class);
+
         if ($this->app->environment('production')) {
             URL::forceScheme('https');
         }
