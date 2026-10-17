@@ -129,6 +129,17 @@ class SoalTPController extends Controller
                     'message' => "Soal dengan ID $id tidak ditemukan.",
                 ], 404);
             }
+
+            // Tolak penghapusan selama soal masih memiliki jawaban praktikan
+            $jumlahJawaban = $soal->jawaban()->count();
+            if ($jumlahJawaban > 0) {
+                return response()->json([
+                    'code' => 'SOAL_HAS_ANSWERS',
+                    'count' => $jumlahJawaban,
+                    'message' => "Soal dengan ID $id tidak dapat dihapus karena masih memiliki $jumlahJawaban jawaban.",
+                ], 409);
+            }
+
             $soal->delete();
 
             return response()->json([
