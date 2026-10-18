@@ -73,6 +73,11 @@ services:
       # network the services are addressed by name, so the container gets its
       # own env file. Create it from .env and override DB_HOST/REDIS_HOST.
       - ./.env.docker:/app/.env
+      # On Windows a bind mount makes every stat() cross the VM boundary.
+      # Boot alone touches ~13k vendor files, which cost 50s here and made a
+      # request take 5s+. Keep dependencies on the container filesystem and
+      # seed them from the bind mount once (see entrypoint).
+      - vendor:/app/vendor
     ports:
       - "8001:8000"
       - "8090:8090"
@@ -85,3 +90,6 @@ networks:
   lms2_network:
     external: true
     name: lms2_network
+
+volumes:
+  vendor:
