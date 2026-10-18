@@ -202,12 +202,15 @@ return [
             'queue' => ['default'],
             'balance' => 'auto',
             'autoScalingStrategy' => 'time',
-            'maxProcesses' => 1,
+            'maxProcesses' => 3,
             'maxTime' => 0,
             'maxJobs' => 0,
             'memory' => 128,
             'tries' => 1,
-            'timeout' => 60,
+            // EvaluateAnswer declares timeout=90 (one provider round trip plus
+            // the embedding call). The supervisor must outlive it, otherwise
+            // Horizon kills the worker mid-call and the row stays "processing".
+            'timeout' => 120,
             'nice' => 0,
         ],
     ],
