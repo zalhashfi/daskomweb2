@@ -253,10 +253,16 @@ class AiConfigTest extends TestCase
 
         $this->assertTrue(Schema::hasTable('ai_configs'), 'up() should create ai_configs.');
 
+        // ai_budget_usage (T28e) and ai_eval_metrics reference ai_configs, so
+        // their migrations must be reverted before the drop is allowed.
+        $dependent = '2026_10_17_270000_create_ai_budget_usage_table';
+        $this->runMigration($dependent, 'down');
+
         $this->runMigration(self::MIGRATION, 'down');
         $this->assertFalse(Schema::hasTable('ai_configs'), 'down() should drop ai_configs.');
 
         $this->runMigration(self::MIGRATION, 'up');
+        $this->runMigration($dependent, 'up');
         $this->assertTrue(Schema::hasTable('ai_configs'), 'up() should recreate ai_configs.');
         $this->assertTrue(Schema::hasColumn('ai_configs', 'model_chat_digest'));
         $this->assertTrue(Schema::hasColumn('ai_configs', 'is_active'));
