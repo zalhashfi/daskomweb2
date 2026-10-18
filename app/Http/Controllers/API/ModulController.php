@@ -134,10 +134,14 @@ class ModulController extends BaseController
                 'isActive' => 0,
             ]);
 
-            // This endpoint sits behind the `api-v1` JSON prefix, so it must
-            // answer with the created resource. A `redirect()->back()` here
-            // made the browser follow the 302 with a body-less GET, which lost
-            // the payload and surfaced to the client as "Network Error".
+            // Inertia posts this form through `router.visit`, which only runs
+            // `onSuccess` when the response carries an Inertia header. Answer
+            // with a real redirect so the browser confirms and refreshes.
+            if ($request->header('X-Inertia')) {
+                return redirect()->back()->with('success', 'Modul added successfully.');
+            }
+
+            // Plain XHR/API clients keep the JSON contract.
             return response()->json([
                 'success' => true,
                 'message' => 'Modul added successfully.',

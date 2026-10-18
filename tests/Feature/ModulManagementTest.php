@@ -110,6 +110,32 @@ class ModulManagementTest extends TestCase
         ]);
     }
 
+    public function test_inertia_client_gets_redirect_to_module_page_not_json(): void
+    {
+        $this->actingAsAssistantWithPermissions(['manage-modul']);
+
+        $payload = [
+            'judul' => 'Modul Inertia Seam',
+            'deskripsi' => 'Inertia harus menerima redirect, bukan JSON.',
+            'isEnglish' => 0,
+            'isUnlocked' => 0,
+        ];
+
+        // The form posts through Inertia's `router.visit`, which sends
+        // `X-Inertia: true` and only runs `onSuccess` when the response carries
+        // an Inertia header. A plain JSON 201 leaves the browser stuck with no
+        // confirmation and a stale list.
+        $response = $this->withHeader('X-Inertia', 'true')
+            ->from('/modul')
+            ->post('/api-v1/modul', $payload);
+
+        $response->assertRedirect('/modul');
+
+        $this->assertDatabaseHas('moduls', [
+            'judul' => $payload['judul'],
+        ]);
+    }
+
     public function test_learning_point_is_required_when_creating_module(): void
     {
         $this->actingAsAssistantWithPermissions(['manage-modul']);
