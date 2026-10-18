@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\API\AiBacklogController;
 use App\Http\Controllers\API\AnomalyController;
 use App\Http\Controllers\API\AsistenController;
 use App\Http\Controllers\API\AutosaveSnapshotController;
@@ -299,6 +300,11 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     Route::post('/modul-documents/{id}/reject', [ModulDocumentController::class, 'reject'])
         ->name('modul.documents.reject')
         ->middleware(['auth:asisten', 'permission:approve-modul-documents']);
+
+    // AI queue backlog per modul (metrics viewer roles only)
+    Route::get('/ai-backlog', [AiBacklogController::class, 'index'])
+        ->name('ai.backlog')
+        ->middleware(['auth:asisten', 'permission:view-ai-metrics']);
 
     Route::get('/anomalies/attendance', [AnomalyController::class, 'attendance'])
         ->name('anomalies.attendance')
