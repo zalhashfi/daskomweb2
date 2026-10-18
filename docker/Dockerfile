@@ -1,6 +1,12 @@
 FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS build
 
 RUN curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer
+# Redis is required: config/cache.php and the queue both use it, and a missing
+# extension fails boot with "Class Redis not found".
+RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
+    && pecl install redis \
+    && docker-php-ext-enable redis \
+    && apk del .build-deps
 RUN docker-php-ext-install pcntl pdo pdo_mysql
 
 FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS runtime

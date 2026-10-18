@@ -53,12 +53,26 @@ services:
     container_name: lms2_web
     build:
       context: docker
+    # The base FrankenPHP image ships a healthcheck against its admin port
+    # (2019), which this image does not enable, so the container was always
+    # reported "unhealthy" while the app itself answered 200. Probe the
+    # application route instead.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/up > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     environment:
       - CADDY_DISABLE_HTTP=true
       - CADDY_DISABLE_HTTPS=true
     command: sh -c "supervisord -c /etc/supervisord.conf"
     volumes:
       - ./:/app
+      # The host .env points at the native MySQL/Redis on port 3307; inside the
+      # network the services are addressed by name, so the container gets its
+      # own env file. Create it from .env and override DB_HOST/REDIS_HOST.
+      - ./.env.docker:/app/.env
     ports:
       - "8001:8000"
       - "8090:8090"
