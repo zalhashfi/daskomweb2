@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\API\AiBacklogController;
 use App\Http\Controllers\API\AiEvaluationRetryController;
+use App\Http\Controllers\API\AiGateController;
+use App\Http\Controllers\API\AiRegradeController;
 use App\Http\Controllers\API\AnomalyController;
 use App\Http\Controllers\API\AsistenController;
 use App\Http\Controllers\API\AutosaveSnapshotController;
@@ -307,10 +309,28 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
         ->name('ai.backlog')
         ->middleware(['auth:asisten', 'permission:view-ai-metrics']);
 
+    // AI gate snapshot + operator controls (gate toggle, per-modul budget)
+    Route::get('/ai-gate', [AiGateController::class, 'show'])
+        ->name('ai.gate.show')
+        ->middleware(['auth:asisten', 'permission:view-ai-metrics']);
+
+    Route::post('/ai-gate/toggle', [AiGateController::class, 'toggle'])
+        ->name('ai.gate.toggle')
+        ->middleware(['auth:asisten', 'permission:manage-ai-gate']);
+
+    Route::post('/ai-gate/budget', [AiGateController::class, 'budget'])
+        ->name('ai.gate.budget')
+        ->middleware(['auth:asisten', 'permission:manage-ai-budget']);
+
     // AI evaluation retry: failed rows of one submission are re-queued (never duplicated)
     Route::post('/ai-evaluations/{submission}/retry', [AiEvaluationRetryController::class, 'retry'])
         ->name('ai.evaluations.retry')
         ->middleware(['auth:asisten', 'permission:nilai-praktikan']);
+
+    // Batch regrade: every latest answer of a modul is re-queued (done rows kept)
+    Route::post('/ai-regrade', [AiRegradeController::class, 'store'])
+        ->name('ai.regrade')
+        ->middleware(['auth:asisten', 'permission:regrade-ai']);
 
     Route::get('/anomalies/attendance', [AnomalyController::class, 'attendance'])
         ->name('anomalies.attendance')
