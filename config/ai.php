@@ -6,7 +6,7 @@
 |--------------------------------------------------------------------------
 |
 | v1 talks to exactly one provider family: an OpenAI-compatible gateway
-| (9router). There is no fallback provider - an unknown/missing driver fails
+| (the internal OpenAI-compatible gateway). There is no fallback provider - an unknown/missing driver fails
 | loudly in App\Services\Ai\AiClientManager, and `fallback_driver` is
 | intentionally absent from this file (spec Q22a/Q30).
 |
