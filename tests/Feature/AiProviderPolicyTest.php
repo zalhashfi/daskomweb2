@@ -96,7 +96,7 @@ class AiProviderPolicyTest extends TestCase
             'base_url' => self::BASE_URL,
             'base_url_host' => 'gateway.test',
             'chat_model' => self::CHAT_MODEL,
-            'retrieval_top_k' => 4,
+            'retrieval_top_k' => 0, // RAG is covered by EvaluateAnswerRagTest
             'max_context_tokens' => 4000,
             'max_answer_chars' => 10000,
             'ai_enabled' => true,
@@ -220,7 +220,7 @@ class AiProviderPolicyTest extends TestCase
                 'model' => self::CHAT_MODEL,
                 'choices' => [[
                     'message' => ['role' => 'assistant', 'content' => json_encode([
-                        'verdict' => 'benar',
+                        'verdict' => 'sesuai',
                         'score' => 100,
                         'confidence' => 0.9,
                         'alasan' => 'Sesuai kunci.',
