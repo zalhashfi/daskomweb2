@@ -326,7 +326,7 @@ class JawabanVerdictResponseTest extends TestCase
             'driver' => 'openai_compatible',
             'base_url' => self::BASE_URL,
             'chat_model' => self::CHAT_MODEL,
-            'retrieval_top_k' => 4,
+            'retrieval_top_k' => 0, // Endpoint tests; RAG retrieval is covered by EvaluateAnswerRagTest.
             'max_context_tokens' => 4000,
             'max_answer_chars' => 10000,
             'allow_external_payload' => true,

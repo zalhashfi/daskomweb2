@@ -12,11 +12,13 @@ use App\Models\AiEvaluation;
 use App\Models\AiEvaluationAttempt;
 use App\Models\JawabanMandiri;
 use App\Models\JawabanTp;
+use App\Models\ModulDocument;
 use App\Models\SoalVersionItem;
 use App\Services\Ai\AiClientManager;
 use App\Services\Ai\AiGate;
 use App\Services\Ai\ModuleQueueGuard;
 use App\Services\Ai\PromptBuilder;
+use App\Services\Ai\Retriever;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Http\Client\ConnectionException;
@@ -45,6 +47,14 @@ use Throwable;
  * Only the happy path reaches the provider; each call is recorded in
  * `ai_evaluation_attempts` and its model is compared with `chat_model` so a
  * silent provider-side model change is surfaced as `model_drift`.
+ *
+ * RAG (T26c): when `retrieval_top_k > 0` and the modul has an active
+ * document, the answer is embedded (one extra recorded attempt), the top-k
+ * chunks are ranked by `Retriever`, trimmed to `max_context_tokens`, fenced
+ * into `<konteks_modul>` blocks and their ids stored as `cited_chunk_ids`.
+ * When `retrieval_top_k > 0` but the modul has no active document, the row
+ * ends `manual_required` with `alasan` = "korpus modul belum tersedia" and
+ * no provider request — the embedding is never sent for an empty corpus.
  *
  * Failure contract (RETRYABLE_ERROR_CODES, spec E8 / E24 / E32):
  *
@@ -158,6 +168,19 @@ class EvaluateAnswer implements ShouldQueue
     public ?string $releasedFor = null;
 
     public const VERDICT_TIDAK_MENJAWAB = 'tidak_menjawab';
+
+    /**
+     * `alasan` written when retrieval_top_k > 0 but the modul has no active
+     * document, so there is no corpus to retrieve from.
+     */
+    public const ALASAN_KORPUS_KOSONG = 'Korpus modul belum tersedia: modul ini belum memiliki dokumen aktif, sehingga jawaban tidak dapat dinilai otomatis dan perlu diperiksa manual.';
+
+    /**
+     * `error_code` on the attempt row that records the query embedding call
+     * (RAG, T26c) — one extra provider request, accounted for like the chat
+     * call.
+     */
+    public const ERROR_EMBED_QUERY = 'EMBED_QUERY';
 
     /**
      * Appended to an answer that had to be cut to `max_answer_chars`.
@@ -324,6 +347,18 @@ class EvaluateAnswer implements ShouldQueue
         $answer = $this->truncateAnswer($answer, $this->maxAnswerChars($config));
         $evaluation->forceFill(['answer_hash' => hash('sha256', $answer)])->save();
 
+        $modulId = $this->modulIdOf($evaluation);
+        $corpusMissing = $modulId !== null
+            && (int) $config->retrieval_top_k > 0
+            && ! $this->modulHasActiveDocuments($modulId);
+        $chunks = $corpusMissing ? [] : $this->retrieveChunks($evaluation, $manager, $config, $modulId, $item, $answer);
+
+        if ($corpusMissing) {
+            $this->completeWithoutCorpus($evaluation, $config);
+
+            return;
+        }
+
         // The answer is always fenced by the builder (which escapes any
         // closing delimiter inside it), so a practican cannot end the block
         // early and smuggle instructions into the prompt.
@@ -332,6 +367,7 @@ class EvaluateAnswer implements ShouldQueue
             'kunci' => (string) $item->jawaban_standar,
             'jawaban' => $answer,
             'max_score' => (int) $item->max_score,
+            'chunks' => array_column($chunks, 'content'),
         ]);
 
         $flatPrompt = $promptBuilder->flatten($messages);
@@ -409,11 +445,188 @@ class EvaluateAnswer implements ShouldQueue
             'tokens_in' => $usage['tokens_in'],
             'tokens_out' => $usage['tokens_out'],
             'latency_ms' => $latencyMs,
+            'cited_chunk_ids' => array_values(array_map(
+                static fn (int $id): int => $id,
+                array_column($chunks, 'chunk_id'),
+            )),
         ])->save();
 
         Log::info('ai.evaluation_done', [
             'ai_evaluation_id' => $evaluation->getKey(),
             'verdict' => $parsed['verdict'],
+            'cited_chunk_count' => count($chunks),
+        ]);
+    }
+
+    /**
+     * RAG (T26c): rank the modul's active chunks against the answer and
+     * return at most `retrieval_top_k` of them, trimmed so the whole prompt
+     * still fits `max_context_tokens`.
+     *
+     * An embedding is a provider call of its own, so it is only made when
+     * there is something to rank against: `retrieval_top_k > 0` AND the
+     * modul has an active document. The empty-corpus case is decided by the
+     * caller (`completeWithoutCorpus`) before this method is reached, so no
+     * embedding request is ever made for it.
+     *
+     * The embedding request is recorded in `ai_evaluation_attempts` (one row,
+     * `error_code = EMBED_QUERY`), so the row's attempt log still accounts
+     * for every outbound request.
+     *
+     * @return list<array{chunk_id: int, content: string, score: float}>
+     */
+    private function retrieveChunks(
+        AiEvaluation $evaluation,
+        AiClientManager $manager,
+        AiConfig $config,
+        ?int $modulId,
+        SoalVersionItem $item,
+        string $answer,
+    ): array {
+        $topK = (int) $config->retrieval_top_k;
+
+        if ($topK <= 0 || $modulId === null) {
+            return [];
+        }
+
+        if (! $this->modulHasActiveDocuments($modulId)) {
+            return [];
+        }
+
+        $queryVector = $this->embedQuery($evaluation, $manager, $config, $this->retrievalQuery($item, $answer));
+
+        if ($queryVector === null) {
+            return [];
+        }
+
+        $ranked = (new Retriever)->topK($modulId, $queryVector, $topK);
+
+        return $this->fitChunksToBudget($ranked, $item, $answer, $config);
+    }
+
+    /**
+     * The text that is embedded for retrieval: the answer, prefixed by the
+     * question so a short verdict-like answer still lands near the right
+     * passages.
+     */
+    private function retrievalQuery(SoalVersionItem $item, string $answer): string
+    {
+        return trim((string) $item->teks_snapshot)."\n\n".$answer;
+    }
+
+    /**
+     * Embed the query, recording the outbound call in the attempt log.
+     * Returns null when the provider sent back no usable vector.
+     *
+     * @return list<float>|null
+     */
+    private function embedQuery(
+        AiEvaluation $evaluation,
+        AiClientManager $manager,
+        AiConfig $config,
+        string $query,
+    ): ?array {
+        $attempt = $this->recordAttempt($evaluation, [
+            'outcome' => 'pending',
+            'error_code' => self::ERROR_EMBED_QUERY,
+        ]);
+        $startedAt = microtime(true);
+
+        try {
+            $vectors = $manager->forEmbed($config)->embed([$query]);
+        } catch (Throwable $exception) {
+            $this->settleAttempt($attempt, [
+                'http_status' => $this->httpStatusOf($exception),
+                'outcome' => 'failed',
+                'error_code' => $this->errorCodeOf($exception),
+                'latency_ms' => $this->elapsedMs($startedAt),
+            ]);
+
+            throw $exception;
+        }
+
+        $vector = is_array($vectors[0] ?? null) ? array_values($vectors[0]) : [];
+
+        $this->settleAttempt($attempt, [
+            'http_status' => 200,
+            'outcome' => $vector === [] ? 'failed' : 'done',
+            'error_code' => $vector === [] ? self::ERROR_INVALID_JSON : self::ERROR_EMBED_QUERY,
+            'latency_ms' => $this->elapsedMs($startedAt),
+        ]);
+
+        return $vector === [] ? null : $vector;
+    }
+
+    /**
+     * Drop the lowest-ranked chunks until the prompt built from what is left
+     * fits `max_context_tokens`. The question, kunci and answer are never cut
+     * here — when even zero chunks overflow, the normal CONTEXT_OVERFLOW path
+     * still reports it.
+     *
+     * @param  list<array{chunk_id: int, content: string, score: float}>  $ranked
+     * @return list<array{chunk_id: int, content: string, score: float}>
+     */
+    private function fitChunksToBudget(array $ranked, SoalVersionItem $item, string $answer, AiConfig $config): array
+    {
+        $limit = (int) $config->max_context_tokens;
+        $builder = new PromptBuilder;
+
+        $fits = function (array $chunks) use ($builder, $item, $answer, $limit): bool {
+            $messages = $builder->build([
+                'soal' => (string) $item->teks_snapshot,
+                'kunci' => (string) $item->jawaban_standar,
+                'jawaban' => $answer,
+                'max_score' => (int) $item->max_score,
+                'chunks' => array_column($chunks, 'content'),
+            ]);
+
+            return $this->estimateTokens($builder->flatten($messages)) <= $limit;
+        };
+
+        while ($ranked !== [] && ! $fits($ranked)) {
+            array_pop($ranked);
+        }
+
+        return array_values($ranked);
+    }
+
+    private function modulHasActiveDocuments(int $modulId): bool
+    {
+        return ModulDocument::query()
+            ->where('modul_id', $modulId)
+            ->where('status', ModulDocument::STATUS_ACTIVE)
+            ->exists();
+    }
+
+    /**
+     * No active document means nothing to retrieve: the row becomes
+     * `manual_required` (no verdict is invented — an assistant grades it by
+     * hand) with `alasan` saying why, and no provider request is made at all
+     * (not even an embedding).
+     */
+    private function completeWithoutCorpus(AiEvaluation $evaluation, AiConfig $config): void
+    {
+        $alasan = self::ALASAN_KORPUS_KOSONG;
+
+        $evaluation->forceFill([
+            'status' => AiEvaluation::STATUS_MANUAL_REQUIRED,
+            'verdict' => null,
+            'alasan' => $alasan,
+            'finished_at' => now(),
+            'ai_score' => null,
+            'raw_response' => json_encode([
+                'alasan' => $alasan,
+            ], JSON_UNESCAPED_UNICODE),
+            'driver' => $config->driver,
+            'model_drift' => false,
+            'tokens_in' => 0,
+            'tokens_out' => 0,
+            'latency_ms' => 0,
+            'cited_chunk_ids' => [],
+        ])->save();
+
+        Log::info('ai.evaluation_without_corpus', [
+            'ai_evaluation_id' => $evaluation->getKey(),
         ]);
     }
 
