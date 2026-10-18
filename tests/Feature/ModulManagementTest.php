@@ -69,7 +69,40 @@ class ModulManagementTest extends TestCase
 
         $response = $this->post('/api-v1/modul', $payload + ['_token' => $token]);
 
-        $response->assertRedirect();
+        // The API answers with the created resource, never a redirect: a 302
+        // loses the payload once the client follows it with a GET.
+        $response
+            ->assertCreated()
+            ->assertJsonPath('success', true);
+
+        $this->assertDatabaseHas('moduls', [
+            'judul' => $payload['judul'],
+            'deskripsi' => $payload['deskripsi'],
+        ]);
+    }
+
+    public function test_creating_module_returns_json_payload_instead_of_redirect(): void
+    {
+        $this->actingAsAssistantWithPermissions(['manage-modul']);
+
+        $payload = [
+            'judul' => 'Modul JSON Seam',
+            'deskripsi' => 'Modul harus dikonfirmasi lewat JSON.',
+            'isEnglish' => 0,
+            'isUnlocked' => 0,
+        ];
+
+        // No `from()` on purpose: a browser XHR sends no Referer, so the old
+        // `redirect()->back()` fell back to the current page and the client
+        // followed it with a body-less GET (422 at best, "Network Error" at
+        // worst). The API must answer with the created resource instead.
+        $response = $this->postJson('/api-v1/modul', $payload);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.judul', $payload['judul'])
+            ->assertJsonPath('data.deskripsi', $payload['deskripsi']);
 
         $this->assertDatabaseHas('moduls', [
             'judul' => $payload['judul'],

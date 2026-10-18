@@ -134,7 +134,15 @@ class ModulController extends BaseController
                 'isActive' => 0,
             ]);
 
-            return redirect()->back()->with('success', 'Modul added successfully.');
+            // This endpoint sits behind the `api-v1` JSON prefix, so it must
+            // answer with the created resource. A `redirect()->back()` here
+            // made the browser follow the 302 with a body-less GET, which lost
+            // the payload and surfaced to the client as "Network Error".
+            return response()->json([
+                'success' => true,
+                'message' => 'Modul added successfully.',
+                'data' => $modul,
+            ], 201);
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Terjadi kesalahan saat menambahkan modul.',
