@@ -197,7 +197,18 @@ class EvaluateAnswer implements ShouldQueue
      */
     public const PROMPT_OVERHEAD_CHARS = 600;
 
-    public function __construct(public AiEvaluation $evaluation) {}
+    /**
+     * Priority of the queue job: `high` for a regrade requested with
+     * `{"priority":"high"}`, otherwise `normal`.
+     */
+    public const PRIORITY_HIGH = 'high';
+
+    public const PRIORITY_NORMAL = 'normal';
+
+    public function __construct(
+        public AiEvaluation $evaluation,
+        public string $priority = self::PRIORITY_NORMAL,
+    ) {}
 
     public function handle(
         AiClientManager $manager,
