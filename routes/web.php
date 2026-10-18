@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\API\AiBacklogController;
+use App\Http\Controllers\API\AiEvaluationRetryController;
 use App\Http\Controllers\API\AnomalyController;
 use App\Http\Controllers\API\AsistenController;
 use App\Http\Controllers\API\AutosaveSnapshotController;
@@ -305,6 +306,11 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     Route::get('/ai-backlog', [AiBacklogController::class, 'index'])
         ->name('ai.backlog')
         ->middleware(['auth:asisten', 'permission:view-ai-metrics']);
+
+    // AI evaluation retry: failed rows of one submission are re-queued (never duplicated)
+    Route::post('/ai-evaluations/{submission}/retry', [AiEvaluationRetryController::class, 'retry'])
+        ->name('ai.evaluations.retry')
+        ->middleware(['auth:asisten', 'permission:nilai-praktikan']);
 
     Route::get('/anomalies/attendance', [AnomalyController::class, 'attendance'])
         ->name('anomalies.attendance')
