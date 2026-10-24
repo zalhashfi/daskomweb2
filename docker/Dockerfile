@@ -1,4 +1,4 @@
-FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS build
+FROM dunglas/frankenphp:1.13.3-php8.4-alpine AS build
 
 RUN curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer
 # Redis is required: config/cache.php and the queue both use it, and a missing
@@ -9,7 +9,7 @@ RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
     && apk del .build-deps
 RUN docker-php-ext-install pcntl pdo pdo_mysql
 
-FROM dunglas/frankenphp:1.9.1-php8.4.13-alpine AS runtime
+FROM dunglas/frankenphp:1.13.3-php8.4-alpine AS runtime
 
 RUN apk add supervisor
 
