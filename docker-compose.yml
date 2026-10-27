@@ -30,6 +30,8 @@ services:
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:-dasdaskom}
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-password}
+    ports:
+      - "3306:3306"
     expose:
       - "3306"
     volumes:

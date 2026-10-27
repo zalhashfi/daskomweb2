@@ -4,6 +4,7 @@ import { Link, usePage } from "@inertiajs/react";
 import ModalPassword from "./Modals/ModalPassword";
 import ModalLogout from "./Modals/ModalLogout";
 import ModalKonfigurasi from "../Assistants/Modals/ModalKonfigurasi";
+import ModalKonfigurasiAi from "../Assistants/Modals/ModalKonfigurasiAi";
 import ModalOpenKJ from "../Assistants/Modals/ModalOpenKJ";
 import ModalActiveTP from "../Assistants/Modals/ModalActiveTP";
 
@@ -187,6 +188,7 @@ export default function AssisstantNav({ asisten, permission_name = [], roleName 
     const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
     const [showLogoutModal, setShowLogoutModal] = useState(false);
     const [showConfigModal, setShowConfigModal] = useState(false);
+    const [showAiConfigModal, setShowAiConfigModal] = useState(false);
     const [showOpenKJ, setShowOpenKJ] = useState(false);
     const [showOpenTP, setShowOpenTP] = useState(false);
     const [isOpen, setIsOpen] = useState(() => !getInitialCollapsed());
@@ -289,6 +291,14 @@ export default function AssisstantNav({ asisten, permission_name = [], roleName 
                 permission: "lms-configuration",
                 allowedRoles: ADMIN_ROLES,
                 onSelect: () => setShowConfigModal(true),
+            },
+            {
+                id: "ai-provider",
+                label: "Provider AI",
+                icon: konfigurasiIcon,
+                permission: "manage-ai-gate",
+                allowedRoles: ADMIN_ROLES,
+                onSelect: () => setShowAiConfigModal(true),
             },
             {
                 id: "active-tp",
@@ -426,6 +436,7 @@ export default function AssisstantNav({ asisten, permission_name = [], roleName 
             />
 
             {showConfigModal && <ModalKonfigurasi onClose={() => setShowConfigModal(false)} />}
+            {showAiConfigModal && <ModalKonfigurasiAi onClose={() => setShowAiConfigModal(false)} />}
             {showOpenKJ && <ModalOpenKJ onClose={() => setShowOpenKJ(false)} />}
             {showOpenTP && <ModalActiveTP onClose={() => setShowOpenTP(false)} />}
         </>

@@ -4,6 +4,7 @@ namespace App\Services\Ai;
 
 use App\Exceptions\AiUnavailableException;
 use App\Models\AiEvaluation;
+use App\Models\AiProviderCredential;
 use App\Models\AiProviderStatus;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
@@ -64,15 +65,18 @@ class ProviderHealth
     ) {}
 
     /**
-     * Build the probe from `config('ai.openai_compatible.*')`.
+     * Build the probe from the active database credential first, falling
+     * back to `config('ai.openai_compatible.*')` for base URL and api key.
      */
     public static function fromConfig(): self
     {
         $config = config('ai.openai_compatible', []);
 
+        $override = AiProviderCredential::active();
+
         return new self(
-            baseUrl: $config['base_url'] ?? null,
-            apiKey: $config['api_key'] ?? null,
+            baseUrl: $override?->resolvedBaseUrl() ?: (string) ($config['base_url'] ?? ''),
+            apiKey: $override?->resolvedApiKey() ?: (string) ($config['api_key'] ?? ''),
         );
     }
 
@@ -258,12 +262,29 @@ class ProviderHealth
      */
     private function recordFailure(int $previousFailures, string $error): array
     {
+        $error = $this->redact($error);
         $failures = $previousFailures + 1;
         $status = $failures >= self::DOWN_AFTER_FAILURES
             ? AiProviderStatus::STATUS_DOWN
             : AiProviderStatus::STATUS_UP;
 
         return $this->recordStatus($status, $failures, $error);
+    }
+
+    /**
+     * Strip the api key (and the base URL host userinfo) from a transport
+     * error before it is stored in `ai_provider_status.last_error` or the
+     * cache: a connection exception may echo the request URL verbatim.
+     */
+    private function redact(string $error): string
+    {
+        $apiKey = trim((string) $this->apiKey);
+
+        if ($apiKey !== '') {
+            $error = str_replace($apiKey, '[redacted]', $error);
+        }
+
+        return (string) preg_replace('#://[^/@\s]+@#', '://[redacted]@', $error);
     }
 
     /**

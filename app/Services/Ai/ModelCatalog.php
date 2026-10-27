@@ -4,6 +4,7 @@ namespace App\Services\Ai;
 
 use App\Exceptions\AiUnavailableException;
 use App\Exceptions\ModelCatalogException;
+use App\Models\AiProviderCredential;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -38,15 +39,19 @@ class ModelCatalog
     ) {}
 
     /**
-     * Build the catalogue from `config('ai.openai_compatible.*')`.
+     * Build the catalogue from the active database credential first, falling
+     * back to `config('ai.openai_compatible.*')` for the base URL, api key
+     * and timeout.
      */
     public static function fromConfig(): self
     {
         $config = config('ai.openai_compatible', []);
 
+        $override = AiProviderCredential::active();
+
         return new self(
-            baseUrl: $config['base_url'] ?? null,
-            apiKey: $config['api_key'] ?? null,
+            baseUrl: $override?->resolvedBaseUrl() ?: (string) ($config['base_url'] ?? ''),
+            apiKey: $override?->resolvedApiKey() ?: (string) ($config['api_key'] ?? ''),
             timeout: (int) ($config['timeout'] ?? 90),
         );
     }
@@ -73,7 +78,9 @@ class ModelCatalog
     }
 
     /**
-     * The catalogue as `id => ['id' => ..., 'owned_by' => ...]`, cached for 24h.
+     * The catalogue as `id => ['id' => ..., 'owned_by' => ...]`, cached for 24h
+     * under a key that includes the credential fingerprint, so a base URL or
+     * api key changed from the UI never serves the previous provider's list.
      *
      * @return array<string, array{id: string, owned_by: string|null}>
      *
@@ -81,7 +88,7 @@ class ModelCatalog
      */
     public function catalog(): array
     {
-        return Cache::remember(self::CACHE_KEY, now()->addHours(self::CACHE_TTL_HOURS), fn (): array => $this->fetch());
+        return Cache::remember($this->cacheKey(), now()->addHours(self::CACHE_TTL_HOURS), fn (): array => $this->fetch());
     }
 
     /**
@@ -93,9 +100,18 @@ class ModelCatalog
      */
     public function refresh(): array
     {
-        Cache::forget(self::CACHE_KEY);
+        Cache::forget($this->cacheKey());
 
         return $this->catalog();
+    }
+
+    /**
+     * Credential-scoped cache key: `CACHE_KEY` plus an md5 fingerprint of the
+     * base URL and api key. Only hashes are part of the key, never the key.
+     */
+    private function cacheKey(): string
+    {
+        return self::CACHE_KEY.':'.md5((string) $this->baseUrl.'|'.md5((string) $this->apiKey));
     }
 
     /**

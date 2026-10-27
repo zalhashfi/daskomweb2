@@ -3,6 +3,7 @@
 namespace App\Services\Ai;
 
 use App\Exceptions\AiUnavailableException;
+use App\Models\AiProviderCredential;
 use App\Services\Ai\Contracts\AiClient;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
@@ -59,16 +60,19 @@ class OpenAiCompatibleClient implements AiClient
     ) {}
 
     /**
-     * Build the client from `config('ai.openai_compatible.*')`, the only
-     * allowed source of base URL, models and credentials.
+     * Build the client from the active database credential first, falling
+     * back to `config('ai.openai_compatible.*')` for anything the operator
+     * has not stored: base URL, api key, models and timeout.
      */
     public static function fromConfig(): self
     {
         $config = config('ai.openai_compatible', []);
 
+        $override = AiProviderCredential::active();
+
         return new self(
-            baseUrl: $config['base_url'] ?? null,
-            apiKey: $config['api_key'] ?? null,
+            baseUrl: $override?->resolvedBaseUrl() ?: (string) ($config['base_url'] ?? ''),
+            apiKey: $override?->resolvedApiKey() ?: (string) ($config['api_key'] ?? ''),
             chatModel: $config['chat_model'] ?? null,
             embedModel: $config['embed_model'] ?? null,
             timeout: (int) ($config['timeout'] ?? 90),

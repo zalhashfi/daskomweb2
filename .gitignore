@@ -46,3 +46,11 @@ docs/
 
 # Database backups (operator-produced, never committed)
 /backup/
+# Global "*credential*" rule hides real source files; re-include them.
+!app/Models/AiProviderCredential.php
+!app/Http/Controllers/API/AiProviderCredentialController.php
+!app/Http/Requests/SaveAiProviderCredentialRequest.php
+!database/migrations/2026_10_26_000000_create_ai_provider_credentials_table.php
+!tests/Feature/AiProviderCredentialTest.php
+!resources/js/hooks/useAiProviderCredentialQuery.js
+!resources/js/lib/routes/aiProviderCredential.js

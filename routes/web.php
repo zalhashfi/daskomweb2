@@ -3,6 +3,7 @@
 use App\Http\Controllers\API\AiBacklogController;
 use App\Http\Controllers\API\AiEvaluationRetryController;
 use App\Http\Controllers\API\AiGateController;
+use App\Http\Controllers\API\AiProviderCredentialController;
 use App\Http\Controllers\API\AiRegradeController;
 use App\Http\Controllers\API\AnomalyController;
 use App\Http\Controllers\API\AsistenController;
@@ -321,6 +322,19 @@ Route::prefix('api-v1')->middleware(['audit.assistant', 'auth:asisten,praktikan'
     Route::post('/ai-gate/budget', [AiGateController::class, 'budget'])
         ->name('ai.gate.budget')
         ->middleware(['auth:asisten', 'permission:manage-ai-budget']);
+
+    // AI provider credentials (gateway base URL + API key, key never returned in full)
+    Route::get('/ai-provider-credentials', [AiProviderCredentialController::class, 'show'])
+        ->name('ai.provider.credentials.show')
+        ->middleware(['auth:asisten', 'permission:view-ai-metrics']);
+
+    Route::post('/ai-provider-credentials/test', [AiProviderCredentialController::class, 'test'])
+        ->name('ai.provider.credentials.test')
+        ->middleware(['auth:asisten', 'permission:manage-ai-gate']);
+
+    Route::post('/ai-provider-credentials', [AiProviderCredentialController::class, 'save'])
+        ->name('ai.provider.credentials.save')
+        ->middleware(['auth:asisten', 'permission:manage-ai-gate']);
 
     // AI evaluation retry: failed rows of one submission are re-queued (never duplicated)
     Route::post('/ai-evaluations/{submission}/retry', [AiEvaluationRetryController::class, 'retry'])
