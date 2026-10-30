@@ -12,6 +12,19 @@ import {
 import * as aiProviderCredentialRoute from "@/lib/routes/aiProviderCredential";
 import editIcon from "../../../../assets/nav/Icon-Konfigurasi.svg";
 
+const normalizeBaseUrl = (value) => {
+    let url = value.trim().replace(/\/+$/, "");
+
+    for (const suffix of ["/v1/chat/completions", "/v1/embeddings", "/v1/models", "/v1"]) {
+        if (url.toLowerCase().endsWith(suffix)) {
+            url = url.slice(0, -suffix.length);
+            break;
+        }
+    }
+
+    return url.replace(/\/+$/, "");
+};
+
 const getErrorMessage = (err) => {
     if (err?.response?.data?.message) {
         return err.response.data.message;
@@ -54,7 +67,7 @@ export default function ModalKonfigurasiAi({ onClose }) {
     const testMutation = useMutation({
         mutationFn: async () => {
             const { data } = await send(aiProviderCredentialRoute.test(), {
-                base_url: baseUrl,
+                base_url: normalizeBaseUrl(baseUrl),
                 api_key: apiKey,
                 reason: reason.length >= 10 ? reason : "Uji koneksi provider AI",
             });
@@ -77,7 +90,7 @@ export default function ModalKonfigurasiAi({ onClose }) {
     const saveMutation = useMutation({
         mutationFn: async () => {
             const { data } = await send(aiProviderCredentialRoute.save(), {
-                base_url: baseUrl,
+                base_url: normalizeBaseUrl(baseUrl),
                 api_key: apiKey,
                 reason,
             });
@@ -177,6 +190,25 @@ export default function ModalKonfigurasiAi({ onClose }) {
                                         ? `Terhubung${connectionResult.models !== null ? `, ${connectionResult.models} model tersedia` : ""}.`
                                         : "Tidak dapat terhubung ke provider."}
                                 </div>
+                            )}
+                        </div>
+
+                        <div className="mt-3 flex flex-col gap-1">
+                            {baseUrl.trim() === "" && (
+                                <span className="text-xs font-semibold text-red-600">Base URL wajib diisi.</span>
+                            )}
+                            {apiKey.trim() === "" && (
+                                <span className="text-xs font-semibold text-red-600">
+                                    API key wajib diisi ulang setiap kali menyimpan.
+                                </span>
+                            )}
+                            {reason.trim().length > 0 && reason.trim().length < 10 && (
+                                <span className="text-xs font-semibold text-red-600">
+                                    Alasan perubahan minimal 10 karakter ({reason.trim().length}/10).
+                                </span>
+                            )}
+                            {reason.trim().length === 0 && (
+                                <span className="text-xs font-semibold text-red-600">Alasan perubahan wajib diisi.</span>
                             )}
                         </div>
 

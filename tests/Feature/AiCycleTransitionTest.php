@@ -61,6 +61,8 @@ class AiCycleTransitionTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         Auth::guard('web')->logout();
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 

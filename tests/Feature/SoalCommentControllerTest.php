@@ -23,6 +23,8 @@ class SoalCommentControllerTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         app(PermissionRegistrar::class)->forgetCachedPermissions();
     }
 

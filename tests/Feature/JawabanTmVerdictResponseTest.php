@@ -55,6 +55,8 @@ class JawabanTmVerdictResponseTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         $this->approver = $this->makeAsisten('tm-verdict-approver');

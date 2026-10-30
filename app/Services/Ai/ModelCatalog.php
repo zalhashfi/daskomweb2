@@ -5,6 +5,7 @@ namespace App\Services\Ai;
 use App\Exceptions\AiUnavailableException;
 use App\Exceptions\ModelCatalogException;
 use App\Models\AiProviderCredential;
+use App\Support\Ai\ProviderEndpoint;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -128,11 +129,11 @@ class ModelCatalog
                 ->withToken((string) $this->apiKey)
                 ->timeout($this->timeout)
                 ->connectTimeout(min($this->timeout, 10))
-                ->get(rtrim((string) $this->baseUrl, '/').'/v1/models');
+                ->get(ProviderEndpoint::normalizeBaseUrl($this->baseUrl).'/v1/models');
         } catch (ConnectionException $e) {
             throw new AiUnavailableException(
                 AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
-                'Koneksi ke katalog model provider AI gagal.',
+                ProviderEndpoint::describeConnectionFailure($e),
                 null,
                 $e,
             );

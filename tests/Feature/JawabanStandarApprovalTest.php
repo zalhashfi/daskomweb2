@@ -4,8 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\Asisten;
 use App\Models\JawabanMandiri;
-use App\Models\JawabanTp;
 use App\Models\JawabanSubmission;
+use App\Models\JawabanTp;
 use App\Models\Modul;
 use App\Models\Praktikan;
 use App\Models\SoalMandiri;
@@ -31,6 +31,8 @@ class JawabanStandarApprovalTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        $this->withoutCsrf();
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 

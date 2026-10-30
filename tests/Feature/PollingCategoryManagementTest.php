@@ -19,6 +19,8 @@ class PollingCategoryManagementTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         app()->make(PermissionRegistrar::class)->forgetCachedPermissions();
     }
 

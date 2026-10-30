@@ -4,6 +4,10 @@ services:
     container_name: lms2_redis
     command: ["redis-server", "--appendonly", "no"]
     restart: always
+    ports:
+      # Reachable from the workstation (tests run on the host, not in a
+      # container). 6380 avoids a local Redis on 6379.
+      - "6380:6379"
     expose:
       - "6379"
     networks:
@@ -31,7 +35,9 @@ services:
       MYSQL_DATABASE: ${DB_DATABASE:-dasdaskom}
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-password}
     ports:
-      - "3306:3306"
+      # Host 3306 is often taken by a local MySQL (Laragon/XAMPP). 3307 keeps
+      # the container reachable from the workstation without a conflict.
+      - "3307:3306"
     expose:
       - "3306"
     volumes:

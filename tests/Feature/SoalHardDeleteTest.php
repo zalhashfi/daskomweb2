@@ -32,6 +32,8 @@ class SoalHardDeleteTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         Model::unguard();
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();

@@ -25,6 +25,8 @@ class SoalDeleteGuardTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         Model::unguard();
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();

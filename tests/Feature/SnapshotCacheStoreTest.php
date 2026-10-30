@@ -25,6 +25,8 @@ class SnapshotCacheStoreTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         Cache::store('array')->flush();
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 

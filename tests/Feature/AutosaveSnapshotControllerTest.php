@@ -22,6 +22,8 @@ class AutosaveSnapshotControllerTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         config([
             'cache.snapshot_store' => 'array',
         ]);

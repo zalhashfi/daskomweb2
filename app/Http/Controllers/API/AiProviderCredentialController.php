@@ -9,6 +9,8 @@ use App\Models\AiConfig;
 use App\Models\AiProviderCredential;
 use App\Services\Ai\ModelCatalog;
 use App\Services\AuditLogger;
+use App\Support\Ai\ProviderEndpoint;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 
 /**
@@ -53,6 +55,14 @@ class AiProviderCredentialController extends Controller
                     'reachable' => false,
                 ],
             ], 422);
+        } catch (ConnectionException $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => ProviderEndpoint::describeConnectionFailure($e),
+                'data' => [
+                    'reachable' => false,
+                ],
+            ], 422);
         }
 
         return response()->json([
@@ -66,7 +76,7 @@ class AiProviderCredentialController extends Controller
 
     public function save(SaveAiProviderCredentialRequest $request): JsonResponse
     {
-        $baseUrl = rtrim((string) $request->string('base_url'), '/');
+        $baseUrl = ProviderEndpoint::normalizeBaseUrl($request->string('base_url'));
         $apiKey = (string) $request->string('api_key');
 
         $credential = AiProviderCredential::store($baseUrl, $apiKey);

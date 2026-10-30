@@ -10,6 +10,7 @@ use App\Services\Ai\ModelCatalog;
 use App\Services\Ai\OpenAiCompatibleClient;
 use App\Services\Ai\ProviderHealth;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -43,6 +44,8 @@ class AiProviderCredentialTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        $this->withoutCsrf();
 
         Auth::guard('web')->logout();
 
@@ -242,6 +245,55 @@ class AiProviderCredentialTest extends TestCase
         ])
             ->assertStatus(422)
             ->assertJsonValidationErrors(['base_url', 'api_key', 'reason']);
+    }
+
+    public function test_a_pasted_v1_url_is_stored_without_the_duplicate_prefix(): void
+    {
+        Http::fake([
+            'probe-gateway.test/v1/models' => Http::response([
+                'data' => [['id' => 'gemini/gemini-flash', 'owned_by' => 'google']],
+            ], 200),
+        ]);
+
+        $this->actingAsAssistant('DDC', ['manage-ai-gate', 'view-ai-metrics']);
+
+        $this->postJson('/api-v1/ai-provider-credentials/test', [
+            'base_url' => 'https://probe-gateway.test/v1/',
+            'api_key' => 'sk-probe-secret-4444',
+            'reason' => 'Uji koneksi dengan URL yang sudah berakhiran v1',
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.models', 1);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://probe-gateway.test/v1/models');
+
+        $this->postJson('/api-v1/ai-provider-credentials', [
+            'base_url' => 'https://probe-gateway.test/v1/',
+            'api_key' => 'sk-probe-secret-4444',
+            'reason' => 'Simpan URL yang sudah berakhiran v1',
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.base_url', 'https://probe-gateway.test');
+
+        $this->assertSame('https://probe-gateway.test', AiProviderCredential::active()->base_url);
+    }
+
+    public function test_a_transport_failure_is_reported_without_a_server_error(): void
+    {
+        Http::fake([
+            'probe-gateway.test/*' => fn (): never => throw new ConnectionException('cURL error 60: SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)'),
+        ]);
+
+        $this->actingAsAssistant('DDC', ['manage-ai-gate']);
+
+        $this->postJson('/api-v1/ai-provider-credentials/test', [
+            'base_url' => 'https://probe-gateway.test',
+            'api_key' => 'sk-probe-secret-4444',
+            'reason' => 'Uji koneksi dengan sertifikat tidak valid',
+        ])
+            ->assertStatus(422)
+            ->assertJsonPath('data.reachable', false)
+            ->assertJsonPath('message', fn (string $message) => str_contains($message, 'Sertifikat SSL'));
     }
 
     private function actingAsAssistant(string $roleName, array $permissions): Asisten

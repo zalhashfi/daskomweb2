@@ -5,6 +5,7 @@ namespace App\Services\Ai;
 use App\Exceptions\AiUnavailableException;
 use App\Models\AiProviderCredential;
 use App\Services\Ai\Contracts\AiClient;
+use App\Support\Ai\ProviderEndpoint;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -167,11 +168,11 @@ class OpenAiCompatibleClient implements AiClient
     private function send(string $path, array $body): Response
     {
         try {
-            return $this->request()->post(rtrim((string) $this->baseUrl, '/').$path, $body);
+            return $this->request()->post(ProviderEndpoint::normalizeBaseUrl($this->baseUrl).$path, $body);
         } catch (ConnectionException $e) {
             throw $this->logAndBuild(
                 AiUnavailableException::CODE_EXTERNAL_UNAVAILABLE,
-                'Koneksi ke provider AI gagal.',
+                ProviderEndpoint::describeConnectionFailure($e),
                 context: ['path' => $path],
                 previous: $e,
             );

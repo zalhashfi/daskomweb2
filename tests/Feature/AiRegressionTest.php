@@ -70,6 +70,8 @@ class AiRegressionTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         // Reset every guard so an assertion never depends on a previous test.

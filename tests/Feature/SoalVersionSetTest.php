@@ -27,6 +27,8 @@ class SoalVersionSetTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         // Every API call needs an asisten; the default one holds manage-soal.

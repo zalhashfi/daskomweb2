@@ -72,6 +72,8 @@ class AiGateLifecycleTest extends TestCase
     {
         parent::setUp();
 
+        $this->withoutCsrf();
+
         config([
             'ai.openai_compatible.base_url' => self::BASE_URL,
             'ai.openai_compatible.api_key' => 'sk-test-secret-lifecycle',
