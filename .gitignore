@@ -39,6 +39,7 @@ supervisord.pid
 
 # Planning & Agentic Workflow
 .planning/
+.gsd/
 ralph.ps1
 AGENTIC_WORKFLOW_GUIDE.md
 docs/agents/
